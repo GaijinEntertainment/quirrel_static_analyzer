@@ -21,6 +21,7 @@ enum OutputMode
 class CompilationContext
 {
   std::vector<int> suppressWarnings;
+  static std::set<std::string> shownMessages;
 
 public:
 

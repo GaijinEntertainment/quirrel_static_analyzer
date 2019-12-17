@@ -5,6 +5,8 @@ using namespace std;
 
 FILE * out_stream = stdout;
 
+std::set<std::string> CompilationContext::shownMessages;
+
 struct AnalyzerMessage
 {
   int intId;
@@ -400,6 +402,13 @@ void CompilationContext::error(int error_code, const char * error, int line, int
   if (isError)
     return;
 
+  string hash = std::to_string(error_code) + std::to_string(line) + "_" + std::to_string(col) +
+    "_" + only_file_name_and_ext(fileName.c_str());
+  if (shownMessages.find(hash) != shownMessages.end())
+    return;
+
+  shownMessages.insert(hash);
+
   isError = true;
   std::string nearestStrings, curString;
   getNearestStrings(line, nearestStrings, curString);
@@ -467,6 +476,15 @@ void CompilationContext::warning(const char * text_id, const Token & tok, const 
 
   if (strstr(code.c_str(), suppressFileIntBuf) || strstr(code.c_str(), suppressFileTextBuf))
     return;
+
+
+  string hash = std::string(text_id) + std::to_string(line) + "_" + std::to_string(col) +
+    "_" + only_file_name_and_ext(fileName.c_str());
+  if (shownMessages.find(hash) != shownMessages.end())
+    return;
+
+  shownMessages.insert(hash);
+
 
   char warningText[512] = { 0 };
   snprintf(warningText, sizeof(warningText), analyzer_messages[msgIndex].messageText, arg0, arg1, arg2, arg3);

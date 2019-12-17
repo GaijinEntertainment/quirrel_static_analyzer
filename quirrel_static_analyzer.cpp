@@ -3537,7 +3537,7 @@ int process_single_source(const string & file_name, const string & source_code, 
   if (expectWarningNumber && (!ctx.isWarning || ctx.shownWarningsAndErrors.size() != 1 ||
     ctx.shownWarningsAndErrors[0] != expectWarningNumber))
   {
-    fprintf(out_stream, "Expected only one warning 'w%d'.\n", expectWarningNumber);
+    fprintf(out_stream, "Expected only one warning 'w%d' in file '%s'.\n", expectWarningNumber, ctx.fileName.c_str());
     return 1;
   }
 
