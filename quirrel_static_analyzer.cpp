@@ -3063,9 +3063,12 @@ public:
     }
 
 
-    if (node->nodeType == PNT_BINARY_OP &&
-      (node->tok.type == TK_ASSIGN || node->tok.type == TK_PLUSEQ || node->tok.type == TK_MINUSEQ ||
-        node->tok.type == TK_MULEQ || node->tok.type == TK_DIVEQ || node->tok.type == TK_MODEQ))
+    if ((node->nodeType == PNT_BINARY_OP &&
+        (node->tok.type == TK_ASSIGN || node->tok.type == TK_PLUSEQ || node->tok.type == TK_MINUSEQ ||
+          node->tok.type == TK_MULEQ || node->tok.type == TK_DIVEQ || node->tok.type == TK_MODEQ))
+        ||
+        ((node->nodeType == PNT_UNARY_POST_OP || node->nodeType == PNT_UNARY_PRE_OP) &&
+          (node->tok.type == TK_PLUSPLUS || node->tok.type == TK_MINUSMINUS)))
     {
       if (node->children[0]->nodeType == PNT_IDENTIFIER)
       {
