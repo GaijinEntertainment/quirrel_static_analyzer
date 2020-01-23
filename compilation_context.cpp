@@ -1,5 +1,7 @@
 #include "compilation_context.h"
 #include "quirrel_lexer.h"
+#include <string.h>
+#include <algorithm>
 
 using namespace std;
 
@@ -26,19 +28,19 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     200, "potentially-nulled-cmp",
-    "Comparison with potentially nulled expression."
+    "Comparison with potentially nullable expression."
   },
   {
     201, "potentially-nulled-arith",
-    "Arith operation with potentially nulled expression."
+    "Arithmetic operation with potentially nullable expression."
   },
   {
     202, "and-or-paren",
-    "Priority of the '&&' operator is higher than that of the '||' operator. Possible missing parentheses."
+    "Priority of the '&&' operator is higher than that of the '||' operator. Perhaps parentheses are missing?"
   },
   {
     203, "bitwise-bool-paren",
-    "Result of bitwise operation used in boolean expression. Possible missing parentheses."
+    "Result of bitwise operation used in boolean expression. Perhaps parentheses are missing?"
   },
   {
     204, "bitwise-apply-to-bool",
@@ -55,7 +57,7 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     207, "identical-if-condition",
-    "The conditional expressions of the 'if' statements situated alongside each other are identical (if (A); if (A);)."
+    "Conditional expressions of 'if' statements situated alongside each other are identical (if (A); if (A);)."
   },
   {
     208, "potentially-nulled-assign",
@@ -75,36 +77,36 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     212, "duplicate-if-expression",
-    "Detected pattern 'if (A) {...} else if (A) {...}'."
+    "Detected pattern 'if (A) {...} else if (A) {...}'. Branch unreachable."
   },
   {
     213, "then-and-else-equals",
-    "The 'then' statement is equivalent to the 'else' statement."
+    "'then' statement is equivalent to 'else' statement."
   },
   {
     214, "operator-returns-same-val",
-    "In '?:' operator 'then' expression is equivalent to the 'else' expression."
+    "Both branches of operator '?:' are equivalent."
   },
   {
     215, "ternary-priority",
-    "Perhaps the '?:' operator works in a different way than it was expected. The '?:' operator "
-    "has a lower priority than the '%s' operator."
+    "The '?:' operator has lower priority than the '%s' operator. Perhaps the '?:' operator "
+    "works in a different way than it was expected."
   },
   {
     216, "same-operands",
-    "The left and right operands of '%s' operator are the same."
+    "Left and right operands of '%s' operator are the same."
   },
   {
     217, "unconditional-return-loop",
-    "Unconditional 'return' within a loop."
+    "Unconditional 'return' inside a loop."
   },
   {
     218, "unconditional-continue-loop",
-    "Unconditional 'continue' within a loop."
+    "Unconditional 'continue' inside a loop."
   },
   {
     219, "unconditional-break-loop",
-    "Unconditional 'break' within a loop."
+    "Unconditional 'break' inside a loop."
   },
   {
     220, "potentially-nulled-container",
@@ -112,19 +114,19 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     221, "result-not-utilized",
-    "Result of operation is not utilized."
+    "Result of operation is not used."
   },
   {
     222, "bool-as-index",
-    "Boolean type used as array index."
+    "Boolean used as array index."
   },
   {
     223, "compared-with-bool",
-    "Comparison with boolean type."
+    "Comparison with boolean."
   },
   {
     224, "empty-while-loop",
-    "The 'while' operator has empty body."
+    "'while' operator has an empty body."
   },
   {
     225, "all-paths-return-value",
@@ -144,7 +146,7 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     229, "copy-of-expression",
-    "Copy of expression found inside the chain of operations."
+    "Duplicate expression found inside the sequance of operations."
   },
   {
     230, "trying-to-modify",
@@ -168,11 +170,11 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     235, "round-to-int",
-    "The result of the division will be integer."
+    "Result of division will be integer."
   },
   {
     236, "shift-priority",
-    "Shift operator has lower priority. Possible missing parentheses."
+    "Shift operator has lower priority. Perhaps parentheses are missing?"
   },
   {
     237, "assigned-never-used",
@@ -180,20 +182,20 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     238, "named-like-should-return",
-    "Function '%s' has name like it should return a value but result is not utilized."
+    "Function name '%s' implies a return value, but its result is never used."
   },
   {
     239, "named-like-return-bool",
-    "Function '%s' has name like it should return a boolen type but not all control paths returns boolean."
+    "Function name '%s' implies a return boolean type but not all control paths returns boolean."
   },
   {
     240, "null-coalescing-priority",
-    "Perhaps the '??' operator works in a different way than it was expected. The '??' operator "
-    "has a lower priority than the '%s' operator (a??b > c == a??(b > c))."
+    "The '??' operator has a lower priority than the '%s' operator (a??b > c == a??(b > c)). "
+    "Perhaps the '??' operator works in a different way than it was expected."
   },
   {
     241, "already-required",
-    "Module '%s' has been already required."
+    "Module '%s' has been required already."
   },
   {
     242, "undefined-variable",
@@ -217,27 +219,27 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     247, "func-can-return-null",
-    "Function '%s' can return null, but it's result used in the operation."
+    "Function '%s' can return null, but its result is used here."
   },
   {
     248, "call-potentially-nulled",
-    "'%s' can be null, but used as function without checking."
+    "'%s' can be null, but is used as a function without checking."
   },
   {
     249, "access-potentially-nulled",
-    "'%s' can be null, but used as container without checking."
+    "'%s' can be null, but is used as a container without checking."
   },
   {
     250, "cmp-with-array",
-    "Comparison with array."
+    "Comparison with an array."
   },
   {
     251, "cmp-with-table",
-    "Comparison with table."
+    "Comparison with a table."
   },
   {
     252, "undefined-const",
-    "Constant '%s' is undefined. For access to roottable variables use '::'."
+    "Constant '%s' is undefined. For access to roottable-variables use '::'."
   },
   {
     253, "const-never-declared",
@@ -257,7 +259,7 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     257, "duplicate-assigned-expr",
-    "Duplicate assigned expression."
+    "Duplicate of the assigned expression."
   },
   {
     258, "similar-function",
@@ -273,7 +275,7 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     261, "conditional-local-var",
-    "Local variable declaration in conditional statement."
+    "Local variable declaration in a conditional statement."
   },
   {
     262, "suspicious-formatting",
@@ -330,7 +332,11 @@ AnalyzerMessage analyzer_messages[] =
   {
     275, "missed-break",
     "A 'break' statement is probably missing in a 'switch' statement."
-  }
+  },
+  {
+    276, "empty-then",
+    "'then' has empty body."
+  },
 };
 
 
@@ -402,14 +408,14 @@ void CompilationContext::error(int error_code, const char * error, int line, int
   if (isError)
     return;
 
+  isError = true;
+
   string hash = std::to_string(error_code) + std::to_string(line) + "_" + std::to_string(col) +
     "_" + only_file_name_and_ext(fileName.c_str());
   if (shownMessages.find(hash) != shownMessages.end())
     return;
 
   shownMessages.insert(hash);
-
-  isError = true;
   std::string nearestStrings, curString;
   getNearestStrings(line, nearestStrings, curString);
 

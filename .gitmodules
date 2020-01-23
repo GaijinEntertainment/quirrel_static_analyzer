@@ -1,0 +1,3 @@
+[submodule "keyValueFile"]
+	path = keyValueFile
+	url = https://github.com/GaijinEntertainment/keyValueFile.git

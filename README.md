@@ -1,4 +1,3 @@
-
 # quirrel_static_analyzer
 
 Quirrel Language Analyzer.
@@ -12,7 +11,16 @@ Quirrel Language Analyzer.
 
 ## How to build
 
-..explain here
+#### Microsoft Visual Studio
+
+* `mkdir build`  
+* `cd build`  
+* `cmake ..`
+
+
+Load generated solution (*.sln), then switch solution configuration to "Release" and build `quirrel_static_analyzer`.
+Run `quirrel_static_analyzer\tests\run_tests.bat` to make sure everything is fine.
+
 
 ## Dependencies and requirements
  

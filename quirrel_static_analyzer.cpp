@@ -12,6 +12,11 @@
 #include <fstream>
 #include <streambuf>
 
+#include <string.h>
+#include <limits.h>
+
+#include "keyValueFile/keyValueFile.h"
+
 #include "quirrel_parser.h"
 #include "module_exports.h"
 
@@ -89,6 +94,269 @@ bool is_cmp_op_token(TokenType type)
 {
   return type == TK_LE || type == TK_LS || type == TK_GE || type == TK_GT || type == TK_3WAYSCMP;
 }
+
+
+namespace settings
+{
+  string cur_config_file_name = "?";
+  bool cur_config_file_failed = false;
+  vector<string> format_function_name;
+  vector<string> function_can_return_null;
+  vector<string> function_calls_lambda_inplace;
+  vector<string> std_identifier;
+  vector<string> std_function;
+  vector<string> function_result_must_be_utilized;
+  vector<string> function_can_return_string;
+  vector<string> function_should_return_bool_prefix;
+  vector<string> function_should_return_something_prefix;
+
+  void reset()
+  {
+    format_function_name =
+    {
+      "prn",
+      "print",
+      "form",
+      "fmt",
+      "log",
+      "debug",
+      "dbg",
+      "assert",
+    };
+
+    function_can_return_null =
+    {
+      "indexof",
+      "findindex",
+      "findvalue",
+    };
+
+    function_calls_lambda_inplace =
+    {
+      "findvalue",
+      "findindex",
+      "__update",
+      "filter",
+      "map",
+      "reduce",
+      "each",
+      "sort",
+      "assert",
+      "persist",
+      "join",
+    };
+
+    std_identifier =
+    {
+      "require",
+      "require_optional",
+      "vargv",
+      "persist",
+      "getclass",
+    };
+
+    std_function =
+    {
+      "seterrorhandler",
+      "setdebughook",
+      "enabledebuginfo",
+      "getstackinfos",
+      "getroottable",
+      "setroottable",
+      "getconsttable",
+      "setconsttable",
+      "getclass",
+      "assert",
+      "print",
+      "error",
+      "compilestring",
+      "newthread",
+      "suspend",
+      "array",
+      "type",
+      "callee",
+      "collectgarbage",
+      "resurrectunreachable",
+      "min",
+      "max",
+      "clamp",
+    };
+
+    function_result_must_be_utilized =
+    {
+      "__merge",
+      "indexof",
+      "findindex",
+      "findvalue",
+      "len",
+      "reduce",
+      "tostring",
+      "tointeger",
+      "tofloat",
+      "slice",
+      "tolower",
+      "toupper",
+    };
+
+    function_can_return_string =
+    {
+      "subst",
+      "concat",
+      "tostring",
+      "toupper",
+      "tolower",
+      "slice",
+      "trim",
+      "join",
+      "format",
+      "replace",
+    };
+
+    function_should_return_bool_prefix =
+    {
+      "has",
+      "Has",
+      "have",
+      "Have",
+      "should",
+      "Should",
+      "need",
+      "Need",
+      "is",
+      "Is",
+      "was",
+      "Was",
+      "will",
+      "Will",
+    };
+
+    function_should_return_something_prefix =
+    {
+      "get",
+      "Get",
+    };
+  }
+
+
+  void print_error_func(const char * msg)
+  {
+    fprintf(out_stream, "%s\n", msg);
+  }
+
+  bool append_from_file(const char * filename)
+  {
+    cur_config_file_name = filename;
+    cur_config_file_failed = false;
+    KeyValueFile config;
+    config.printErrorFunc = print_error_func;
+    if (!config.loadFromFile(filename))
+    {
+      cur_config_file_failed = true;
+      fprintf(out_stream, "ERROR: Failed to read .sqconfig-file '%s'\n", filename);
+      return false;
+    }
+
+    for (auto && v : config.getValuesList("format_function_name"))
+    {
+      string functionName(v);
+      std::transform(functionName.begin(), functionName.end(), functionName.begin(), ::tolower);
+      format_function_name.push_back(functionName);
+    }
+
+    for (auto && v : config.getValuesList("function_can_return_null"))
+      function_can_return_null.push_back(v);
+
+    for (auto && v : config.getValuesList("function_calls_lambda_inplace"))
+      function_calls_lambda_inplace.push_back(v);
+
+    for (auto && v : config.getValuesList("std_identifier"))
+      std_identifier.push_back(v);
+
+    for (auto && v : config.getValuesList("std_function"))
+      std_function.push_back(v);
+
+    for (auto && v : config.getValuesList("function_result_must_be_utilized"))
+      function_result_must_be_utilized.push_back(v);
+
+    for (auto && v : config.getValuesList("function_can_return_string"))
+      function_can_return_string.push_back(v);
+
+    for (auto && v : config.getValuesList("function_should_return_bool_prefix"))
+      function_should_return_bool_prefix.push_back(v);
+
+    for (auto && v : config.getValuesList("function_should_return_something_prefix"))
+      function_should_return_something_prefix.push_back(v);
+
+    return true;
+  }
+
+  bool find(const char * s, const vector<string> & vector_of_words)
+  {
+    for (auto && val : vector_of_words)
+      if (!strcmp(s, val.c_str()))
+        return true;
+
+    return false;
+  }
+
+  bool has_prefix(const char * s, const vector<string> & prefixes)
+  {
+    for (auto && val : prefixes)
+      if (!strncmp(s, val.c_str(), val.length()))
+      {
+        char next = s[val.length()];
+        if (!next || next == '_' || next != tolower(next))
+          return true;
+      }
+
+    return false;
+  }
+
+  bool find_substring(const char * s, const vector<string> & prefixes)
+  {
+    for (auto && val : prefixes)
+      if (!!strstr(s, val.c_str()))
+        return true;
+
+    return false;
+  }
+
+
+  string search_sqconfig(const char * initial_file_name)
+  {
+    if (!initial_file_name)
+      return string("");
+
+    static string cachedDir = "?";
+    static string cachedFileName = "?";
+    const char * slash1 = strrchr(initial_file_name, '\\');
+    const char * slash2 = strrchr(initial_file_name, '/');
+    const char * slash = slash1 > slash2 ? slash1 : slash2;
+    string dir = slash ? string(initial_file_name, slash - initial_file_name + 1) : string("");
+    if (dir == cachedDir)
+      return cachedFileName;
+
+    string fileName;
+    string bckDir = dir;
+    for (int i = 0; i < 16; i++)
+    {
+      if (FILE * f = fopen((bckDir + ".sqconfig").c_str(), "rt"))
+      {
+        fclose(f);
+        fileName = bckDir + ".sqconfig";
+        break;
+      }
+      bckDir = bckDir + "../";
+    }
+
+    if (fileName.empty())
+      return string("");
+
+    cachedDir = dir;
+    cachedFileName = fileName;
+    return fileName;
+  }
+};
 
 
 namespace trusted
@@ -879,17 +1147,8 @@ class Analyzer
           string functionName = functionNameNode->tok.u.s;
           std::transform(functionName.begin(), functionName.end(), functionName.begin(), ::tolower);
 
-          if (!!strstr(functionName.c_str(), "prn") ||
-            !!strstr(functionName.c_str(), "print") ||
-            !!strstr(functionName.c_str(), "form") ||
-            !!strstr(functionName.c_str(), "fmt") ||
-            !!strstr(functionName.c_str(), "log") ||
-            !!strstr(functionName.c_str(), "debug") ||
-            !!strstr(functionName.c_str(), "dbg") ||
-            !!strstr(functionName.c_str(), "assert"))
-          {
+          if (settings::find_substring(functionName.c_str(), settings::format_function_name))
             ctx.warning("format-arguments-count", arg->tok);
-          }
         }
 
         return;
@@ -923,11 +1182,8 @@ class Analyzer
     if (ident->nodeType != PNT_IDENTIFIER)
       return false;
 
-    if (!strcmp(ident->tok.u.s, "require") || !strcmp(ident->tok.u.s, "require_optional") ||
-      !strcmp(ident->tok.u.s, "vargv") || !strcmp(ident->tok.u.s, "persist") || !strcmp(ident->tok.u.s, "getclass"))
-    {
+    if (settings::find(ident->tok.u.s, settings::std_identifier))
       return false;
-    }
 
     if (trusted::trusted_identifiers)
       return true;
@@ -955,21 +1211,7 @@ class Analyzer
     if (!name || !name[0])
       return false;
 
-    bool nameInList = false;
-    if (strstr(name, "has") == name && inWordEnd(name, 3))
-      nameInList = true;
-    if (strstr(name, "have") == name && inWordEnd(name, 4))
-      nameInList = true;
-    else if (strstr(name, "should") == name && inWordEnd(name, 6))
-      nameInList = true;
-    else if (strstr(name, "need") == name && inWordEnd(name, 4))
-      nameInList = true;
-    else if (strstr(name, "is") == name && inWordEnd(name, 2))
-      nameInList = true;
-    else if (strstr(name, "was") == name && inWordEnd(name, 3))
-      nameInList = true;
-
-    return nameInList;
+    return settings::has_prefix(name, settings::function_should_return_bool_prefix);
   }
 
 
@@ -978,16 +1220,12 @@ class Analyzer
     if (!name || !name[0])
       return false;
 
-    bool nameInList = nameLooksLikeResultMustBeBoolean(name);
+    bool nameInList = nameLooksLikeResultMustBeBoolean(name) ||
+      settings::has_prefix(name, settings::function_should_return_something_prefix);
 
-    if (nameInList)
-      ;
-    else if (strstr(name, "get") == name && (inWordEnd(name, 3) || name[3] == 0))
-      nameInList = true;
-    else if (strstr(name, "mk") == name && inWordEnd(name, 2))
-      nameInList = true;
-    else if ((strstr(name, "_ctor") || strstr(name, "Ctor")) && strstr(name, "set") != name)
-      nameInList = true;
+    if (!nameInList)
+      if ((strstr(name, "_ctor") || strstr(name, "Ctor")) && strstr(name, "set") != name)
+        nameInList = true;
 
     return nameInList;
   }
@@ -995,89 +1233,18 @@ class Analyzer
 
   bool nameLooksLikeResultMustBeUtilised(const char * name)
   {
-    bool nameInList = false;
-    if (!strcmp(name, "__merge"))
-      nameInList = true;
-    else if (!strcmp(name, "find") || !strcmp(name, "indexof"))
-      nameInList = true;
-    else if (!strcmp(name, "searchindex") || !strcmp(name, "findindex") || !strcmp(name, "findvalue"))
-      nameInList = true;
-    else if (!strcmp(name, "len"))
-      nameInList = true;
-    else if (!strcmp(name, "reduce"))
-      nameInList = true;
-    else if (!strcmp(name, "tostring"))
-      nameInList = true;
-    else if (!strcmp(name, "tointeger"))
-      nameInList = true;
-    else if (!strcmp(name, "tofloat"))
-      nameInList = true;
-    else if (!strcmp(name, "slice"))
-      nameInList = true;
-    else if (!strcmp(name, "tolower"))
-      nameInList = true;
-    else if (!strcmp(name, "toupper"))
-      nameInList = true;
-    else if (nameLooksLikeResultMustBeBoolean(name))
-      nameInList = true;
-
-    return nameInList;
+    return settings::find(name, settings::function_result_must_be_utilized) ||
+      nameLooksLikeResultMustBeBoolean(name);
   }
-
 
   bool isStdFunction(const char * name)
   {
-    const char * functions[] =
-    {
-      "seterrorhandler",
-      "setdebughook",
-      "enabledebuginfo",
-      "getstackinfos",
-      "getroottable",
-      "setroottable",
-      "getconsttable",
-      "setconsttable",
-      "getclass",
-      "assert",
-      "print",
-      "error",
-      "compilestring",
-      "newthread",
-      "suspend",
-      "array",
-      "type",
-      "callee",
-      "dummy",
-      "collectgarbage",
-      "resurrectunreachable",
-      "min",
-      "max",
-      "clamp"
-    };
-
-    for (size_t i = 0; i < sizeof(functions) / sizeof(functions[0]); i++)
-      if (!strcmp(name, functions[i]))
-        return true;
-
-    return false;
+    return settings::find(name, settings::std_function);
   }
 
   bool canFunctionReturnNull(const char * name)
   {
-    const char * functions[] =
-    {
-      "find",
-      "indexof",
-      "searchindex",
-      "findindex",
-      "findvalue",
-    };
-
-    for (size_t i = 0; i < sizeof(functions) / sizeof(functions[0]); i++)
-      if (!strcmp(name, functions[i]))
-        return true;
-
-    return false;
+    return settings::find(name, settings::function_can_return_null);
   }
 
   bool isWatchedVariable(const char * name)
@@ -1088,7 +1255,7 @@ class Analyzer
         if (lexer.tokens[i + 1].type == TK_ASSIGN)
         {
           int line = lexer.tokens[i + 2].line;
-          for (int j = i + 2; j < lexer.tokens.size() - 1; j++)
+          for (size_t j = i + 2; j < lexer.tokens.size() - 1; j++)
           {
             if (lexer.tokens[j].line != line)
               break;
@@ -1240,10 +1407,11 @@ public:
     for (size_t i = nodePath.size() - 1; nodePath[i] != nullptr; nextNode = nodePath[i], i--)
     {
       if (nodePath[i]->nodeType == PNT_IF_ELSE || nodePath[i]->nodeType == PNT_TERNARY_OP ||
-        nodePath[i]->nodeType == PNT_WHILE_LOOP)
+        nodePath[i]->nodeType == PNT_WHILE_LOOP ||
+        (nodePath[i]->nodeType == PNT_BINARY_OP && (nodePath[i]->tok.type == TK_AND || nodePath[i]->tok.type == TK_OR)))
       {
         Node * condition = nodePath[i]->children[0];
-        if (isSubnodeExistsInNode(condition, variable))
+        if (condition != nextNode && isSubnodeExistsInNode(condition, variable))
           return true;
       }
     }
@@ -1496,22 +1664,8 @@ public:
       node->children[0]->children[1]->nodeType == PNT_IDENTIFIER)
     {
       const char * fnName = node->children[0]->children[1]->tok.u.s;
-      if (
-        !strcmp(fnName, "subst") ||
-        !strcmp(fnName, "concat") ||
-        !strcmp(fnName, "tostring") ||
-        !strcmp(fnName, "toupper") ||
-        !strcmp(fnName, "tolower") ||
-        !strcmp(fnName, "slice") ||
-        !strcmp(fnName, "trim") ||
-        !strcmp(fnName, "join") ||
-        !strcmp(fnName, "loc") ||
-        !strcmp(fnName, "format") ||
-        !strcmp(fnName, "replace")
-        )
-      {
+      if (settings::find(fnName, settings::function_can_return_string))
         return true;
-      }
     }
 
     if (node->nodeType == PNT_FUNCTION_CALL && node->children[0]->nodeType == PNT_IDENTIFIER)
@@ -2052,6 +2206,10 @@ public:
     if (node->nodeType == PNT_WHILE_LOOP)
       if (!node->children[1] || node->children[1]->nodeType == PNT_EMPTY_STATEMENT)
         ctx.warning("empty-while-loop", node->tok);
+
+    if (node->nodeType == PNT_IF_ELSE)
+      if (node->children.size() == 2 && !node->children[1] || node->children[1]->nodeType == PNT_EMPTY_STATEMENT)
+        ctx.warning("empty-then", node->tok);
 
     if (node->nodeType == PNT_FUNCTION || node->nodeType == PNT_LOCAL_FUNCTION ||
       node->nodeType == PNT_CLASS_CONSTRUCTOR || node->nodeType == PNT_CLASS_METHOD)
@@ -2736,7 +2894,7 @@ public:
     if (nodePath[i - 1] && nodePath[i - 1]->nodeType == PNT_FOR_EACH_LOOP)
       ident.loopNode = nodePath[i - 1];
 
-    localIdentifiers[scope_depth].insert_or_assign(name, ident);
+    localIdentifiers[scope_depth][name] = ident;
   }
 
   int cmpTokenPos(const Token * a, const Token * b) // a - b
@@ -2941,22 +3099,7 @@ public:
 
   bool is_function_calls_lamda_inplace(const char * name)
   {
-    return (
-      !strcmp(name, "findvalue") ||
-      !strcmp(name, "findindex") ||
-      !strcmp(name, "update") ||
-      !strcmp(name, "search") ||
-      !strcmp(name, "filter") ||
-      !strcmp(name, "map") ||
-      !strcmp(name, "reduce") ||
-      !strcmp(name, "each") ||
-      !strcmp(name, "sort") ||
-      !strcmp(name, "assert") ||
-      !strcmp(name, "combine") ||
-      !strcmp(name, "persist") ||
-      !strcmp(name, "sharedWatched") ||
-      !strcmp(name, "join")
-      );
+    return settings::find(name, settings::function_calls_lambda_inplace);
   }
 
 
@@ -3403,10 +3546,12 @@ OutputMode str_to_output_mode(const char * str)
   return OM_FULL;
 }
 
+static std::set<int> used_args;
 static int argc__ = 0;
 static char ** argv__ = nullptr;
 
-int process_single_source(const string & file_name, const string & source_code, bool use_csq, bool collect_ident_tree)
+int process_single_source(const string & file_name, const string & source_code, const string & sqconfig_file_name,
+  bool use_csq, bool collect_ident_tree)
 {
   CompilationContext ctx;
 
@@ -3419,6 +3564,7 @@ int process_single_source(const string & file_name, const string & source_code, 
   for (int i = 1; i < argc__; i++)
   {
     const char * arg = argv__[i];
+    bool used = true;
 
     {
       // HACK: fix "duplucate-if-expression" -> "duplicate-if-expression", and support old config files
@@ -3429,16 +3575,21 @@ int process_single_source(const string & file_name, const string & source_code, 
 
     if (!strcmp(arg, "--inverse-warnings"))
       inverseWarnings = true;
-    if (!strncmp(arg, "--csq-exe:", 10))
+    else if (!strncmp(arg, "--csq-exe:", 10))
       moduleexports::csq_exe = arg + 10;
-    if (!strcmp(arg, "--print-ast"))
+    else if (!strcmp(arg, "--print-ast"))
       printAst = true;
-    if (!strncmp(arg, "--output-mode:", 14))
+    else if (!strncmp(arg, "--output-mode:", 14))
       ctx.outputMode = str_to_output_mode(arg + 14);
     else if (arg[0] == '-' && (toupper(arg[1]) == 'W') && isdigit(arg[2]))
       ctx.suppressWaring(atoi(arg + 2));
     else if (arg[0] == '-' && isalpha(arg[1]))
       ctx.suppressWaring(arg + 1);
+    else
+      used = false;
+
+    if (used)
+      used_args.insert(i);
   }
 
   if (inverseWarnings)
@@ -3473,6 +3624,21 @@ int process_single_source(const string & file_name, const string & source_code, 
   }
 
   ctx.setFileName(file_name);
+
+
+  string sqconfigFileName = sqconfig_file_name.empty() ? settings::search_sqconfig(file_name.c_str()) : sqconfig_file_name;
+  if (sqconfigFileName != settings::cur_config_file_name)
+  {
+    settings::reset();
+    if (!sqconfigFileName.empty())
+      if (!settings::append_from_file(sqconfigFileName.c_str()))
+        return 1;
+  }
+  else if (settings::cur_config_file_failed)
+  {
+    return 1;
+  }
+
 
   if (variable_presense_check)
     moduleexports::module_export_collector(ctx, 0, 0, nullptr);
@@ -3590,6 +3756,7 @@ int process_stream_file(const char * stream_file_name)
   string fileName;
   trusted::TrustedContext trustedContext = trusted::TR_CONST;
   string code;
+  string sqconfig;
   bool insideCode = false;
 
   for (;;)
@@ -3607,7 +3774,7 @@ int process_stream_file(const char * stream_file_name)
 
       if ((buf[0] == '#' && buf[1] == '#') || !*p) // end of code
       {
-        res |= process_single_source(fileName, code, false, false);
+        res |= process_single_source(fileName, code, sqconfig, false, false);
         insideCode = false;
       }
     }
@@ -3622,6 +3789,8 @@ int process_stream_file(const char * stream_file_name)
       code.clear();
       insideCode = false;
     }
+    else if (!strncmp(buf.c_str(), "###[SQCONFIG]", sizeof("###[SQCONFIG]") - 1))
+      sqconfig = string(buf.c_str() + sizeof("###[SQCONFIG]") - 1);
     else if (!strcmp(buf.c_str(), "###[LOCALS]"))
       trustedContext = trusted::TR_LOCAL;
     else if (!strcmp(buf.c_str(), "###[GLOBALS]"))
@@ -3648,6 +3817,20 @@ int process_stream_file(const char * stream_file_name)
 }
 
 
+static int check_unrecorgnized_args_before_exit()
+{
+  int returnCode = 0;
+  for (int i = 1; i < argc__; i++)
+    if (used_args.find(i) == used_args.end())
+    {
+      fprintf(out_stream, "\nERROR: unrecognized argument \"%s\"\n", argv__[i]);
+      returnCode = 1;
+    }
+
+  return returnCode;
+}
+
+
 int main(int argc, char ** argv)
 {
   argv__ = argv;
@@ -3655,8 +3838,9 @@ int main(int argc, char ** argv)
 
   if (argc <= 1 || !strcmp(argv[1], "--help"))
   {
+    used_args.insert(1);
     print_usage();
-    return 0;
+    return check_unrecorgnized_args_before_exit();
   }
 
 
@@ -3665,6 +3849,7 @@ int main(int argc, char ** argv)
     const char * arg = argv[i];
     if (!strncmp(arg, "--output:", 9))
     {
+      used_args.insert(i);
       const char * outFileName = arg + 9;
       FILE * fo = fopen(outFileName, "wt");
       if (!fo)
@@ -3681,8 +3866,9 @@ int main(int argc, char ** argv)
 
   if (argc >= 2 && !strcmp(argv[1], "--warnings-list"))
   {
+    used_args.insert(1);
     CompilationContext::printAllWarningsList();
-    return 0;
+    return check_unrecorgnized_args_before_exit();
   }
 
   const char * streamFile = nullptr;
@@ -3694,12 +3880,16 @@ int main(int argc, char ** argv)
     const char * arg = argv[i];
     if (arg[0] != '-')
     {
+      used_args.insert(i);
       fileList.push_back(string(arg));
       break;
     }
 
     if (!strncmp(arg, "--stream:", 9))
+    {
       streamFile = arg + 9;
+      used_args.insert(i);
+    }
 
     bool isFiles = !strncmp(arg, "--files:", 8);
     bool isPredefinitionFiles = !strncmp(arg, "--predefinition-files:", 22);
@@ -3708,6 +3898,7 @@ int main(int argc, char ** argv)
 
     if (isFiles || isPredefinitionFiles)
     {
+      used_args.insert(i);
       const char * fn = arg + (isPredefinitionFiles ? 22 : 8);
       ifstream tmp(fn);
       if (tmp.fail())
@@ -3717,11 +3908,11 @@ int main(int argc, char ** argv)
       }
 
       string filesListString((std::istreambuf_iterator<char>(tmp)), std::istreambuf_iterator<char>());
-      filesListString += " ";
+      filesListString += "\n";
       string nutName;
       for (size_t j = 0; j < filesListString.size(); j++)
       {
-        if (filesListString[j] > ' ')
+        if (filesListString[j] >= ' ')
           nutName += filesListString[j];
         else if (!nutName.empty())
         {
@@ -3749,21 +3940,24 @@ int main(int argc, char ** argv)
     if (fileList.empty())
     {
       fprintf(out_stream, "ERROR: (2) Expected file name");
+      fcloseall();
       return 1;
     }
 
     if (two_pass_scan)
     {
       for (string & fileName : predefinitionFileList)
-        res |= process_single_source(fileName, sourceCode, true, true);
+        res |= process_single_source(fileName, sourceCode, string(), true, true);
 
       //dump_ident_root(0, &ident_root);
     }
 
     for (string & fileName : fileList)
-      res |= process_single_source(fileName, sourceCode, true, false);
+      res |= process_single_source(fileName, sourceCode, string(), true, false);
   }
 
+  res |= check_unrecorgnized_args_before_exit();
+  fcloseall();
   return res;
 }
 

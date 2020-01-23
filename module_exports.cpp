@@ -1,7 +1,13 @@
 #include "module_exports.h"
 
 #include <map>
-#include <process.h> // for process id
+#include <algorithm>
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#  include <process.h>
+#endif
 
 using namespace std;
 
@@ -46,11 +52,20 @@ namespace moduleexports
       return false;
     }
 
+    char uniq[16] = { 0 };
+
+#if defined(_WIN32)
+    snprintf(uniq, sizeof(uniq), "%d", _getpid());
+#else
+    strcpy(uniq, "XXXXXX");
+    mkstemp(uniq);
+#endif
+
     char nutFileName[L_tmpnam] = { 0 };
     char outputFileName[L_tmpnam] = { 0 };
-    snprintf(nutFileName, sizeof(nutFileName), "%s%s~nut%d.%d.tmp", ctx.fileDir.c_str(),
-      ctx.fileDir.empty() ? "" : "/", _getpid(), tmp_cnt);
-    snprintf(outputFileName, sizeof(outputFileName), "~out%d.%d.tmp", _getpid(), tmp_cnt);
+    snprintf(nutFileName, sizeof(nutFileName), "%s%s~nut%s.%d.tmp", ctx.fileDir.c_str(),
+      ctx.fileDir.empty() ? "" : "/", uniq, tmp_cnt);
+    snprintf(outputFileName, sizeof(outputFileName), "~out%s.%d.tmp", uniq, tmp_cnt);
     tmp_cnt++;
 
     //tmpnam(nutFileName);
@@ -69,7 +84,7 @@ namespace moduleexports
     fprintf(fnut, "%s", dump_sorted_module_code);
     fclose(fnut);
 
-    if (system((csq_exe + " " + nutFileName + " > " + outputFileName).c_str()))
+    if (system((csq_exe + " \"" + nutFileName + "\" > " + outputFileName).c_str()))
     {
       if (system((csq_exe + " --version > nul").c_str()))
       {
@@ -100,6 +115,7 @@ namespace moduleexports
     map<string, vector<string> > moduleContent;
     map<string, vector<string> > moduleRoot;
 
+    string emptyString = string();
 
     char buffer[255] = { 0 };
     bool isError = false;
@@ -135,7 +151,7 @@ namespace moduleexports
 
 
         string & parent = names[0];
-        string & child = names.size() > 1 ? names[1] : string();
+        string & child = names.size() > 1 ? names[1] : emptyString;
 
         auto it = addTo.find(parent);
         if (it == addTo.end())

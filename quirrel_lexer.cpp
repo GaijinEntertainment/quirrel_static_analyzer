@@ -1,4 +1,6 @@
 #include "quirrel_lexer.h"
+#include <limits.h>
+#include <string.h>
 
 
 bool is_utf8_bom(const char * ptr, int i)
