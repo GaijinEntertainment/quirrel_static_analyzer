@@ -19,6 +19,8 @@
 
 #include "quirrel_parser.h"
 #include "module_exports.h"
+#include "json_output.h"
+
 
 using namespace std;
 
@@ -95,6 +97,10 @@ bool is_cmp_op_token(TokenType type)
   return type == TK_LE || type == TK_LS || type == TK_GE || type == TK_GT || type == TK_3WAYSCMP;
 }
 
+bool is_cmp_op_with_bool_result(TokenType type)
+{
+  return type == TK_EQ || type == TK_NE || type == TK_LE || type == TK_LS || type == TK_GE || type == TK_GT;
+}
 
 namespace settings
 {
@@ -240,6 +246,7 @@ namespace settings
 
   void print_error_func(const char * msg)
   {
+    CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
     fprintf(out_stream, "%s\n", msg);
   }
 
@@ -252,7 +259,7 @@ namespace settings
     if (!config.loadFromFile(filename))
     {
       cur_config_file_failed = true;
-      fprintf(out_stream, "ERROR: Failed to read .sqconfig-file '%s'\n", filename);
+      CompilationContext::globalError((string("Failed to read .sqconfig-file '") + filename + "'").c_str());
       return false;
     }
 
@@ -1444,6 +1451,24 @@ public:
   }
 
 
+  const char * getFieldName(Node * node)
+  {
+    if (!node)
+      return "";
+
+    if (node->nodeType == PNT_IDENTIFIER)
+      return node->tok.u.s;
+
+    if (node->nodeType == PNT_FUNCTION_CALL || node->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL)
+      return getFunctionName(node);
+
+    if (node->nodeType == PNT_ACCESS_MEMBER || node->nodeType == PNT_ACCESS_MEMBER_IF_NOT_NULL)
+      return getFieldName(node->children[1]);
+
+    return "";
+  }
+
+
   void updateNearestAssignments(Node * node)
   {
     if (!node)
@@ -2181,20 +2206,32 @@ public:
     if (node->nodeType == PNT_BINARY_OP)
     {
       TokenType t = node->tok.type;
-      if (t == TK_EQ || t == TK_NE)
+      if (is_cmp_op_with_bool_result(t))
       {
         Node * a = tryReplaceVar(node->children[0], true);
         Node * b = tryReplaceVar(node->children[1], true);
 
         TokenType left = a->tok.type;
         TokenType right = b->tok.type;
-        if (left == TK_EQ || left == TK_NE || right == TK_EQ || right == TK_NE)
+        if (is_cmp_op_with_bool_result(left) || is_cmp_op_with_bool_result(right))
         {
           bool warn = true;
-          if ((node->children[0]->nodeType == PNT_IDENTIFIER && nameLooksLikeResultMustBeBoolean(node->children[0]->tok.u.s)) ||
-            (node->children[1]->nodeType == PNT_IDENTIFIER && nameLooksLikeResultMustBeBoolean(node->children[1]->tok.u.s)))
+          if (t == TK_EQ || t == TK_NE)
           {
-            warn = false;
+            if (nameLooksLikeResultMustBeBoolean(getFieldName(node->children[0])) ||
+                nameLooksLikeResultMustBeBoolean(getFieldName(node->children[1])) ||
+                nameLooksLikeResultMustBeBoolean(getFieldName(a)) ||
+                nameLooksLikeResultMustBeBoolean(getFieldName(b))
+               )
+            {
+              warn = false;
+            }
+
+            if (node->children[0]->nodeType == PNT_IDENTIFIER && node->children[1]->nodeType == PNT_IDENTIFIER &&
+              is_cmp_op_with_bool_result(left) && is_cmp_op_with_bool_result(right))
+            {
+              warn = false;
+            }
           }
 
           if (warn)
@@ -2374,7 +2411,11 @@ public:
         rightConstant->nodeType == PNT_BOOL || rightConstant->nodeType == PNT_STRING ||
         rightConstant->nodeType == PNT_FLOAT || isUpperCaseIdentifier(rightConstant));
 
-      if (leftIsConstant || (rightIsConstant && node->tok.type != TK_OR))
+      if (rightIsConstant && node->tok.type == TK_OR) // exclude cases when '||' is used instead of '??'
+        if (rightConstant->tok.type != TK_TRUE)
+          rightIsConstant = false;
+
+      if (leftIsConstant || rightIsConstant)
         ctx.warning("const-in-bool-expr", node->tok);
     }
 
@@ -3481,7 +3522,7 @@ public:
         }
       }
 
-      if ((child->nodeType == PNT_FUNCTION || child->nodeType == PNT_LOCAL_FUNCTION) && child->children[0])
+      if ((child->nodeType == PNT_FUNCTION) && child->children[0])
       {
         if (child->children[0]->nodeType == PNT_IDENTIFIER)
         {
@@ -3522,10 +3563,17 @@ void print_usage()
   fprintf(out_stream, "  --output-mode:<1-line | 2-lines | full>  default is 'full'.\n");
   fprintf(out_stream, "  --csq-exe:<csq.exe with path> - set path to console squirrel executable file.\n");
   fprintf(out_stream, "  --warnings-list - show all supported warnings.\n");
+  fprintf(out_stream,
+    "  --tokens-output-file:<file-name> - print tokens to file (JSON), 'stdout' will be used if <file-name> is empty .\n");
+  fprintf(out_stream, "  --ast-output-file:<file-name> - print AST to file (JSON), 'stdout' will be used if <file-name> is empty .\n");
+  fprintf(out_stream,
+    "  --message-output-file:<file-name> - print compiler messages to file (JSON), 'stdout' will be used if <file-name> is empty .\n");
   fprintf(out_stream, "  --inverse-warnings - all warnings will be disabled by default, -wNNN will enable warning.\n");
   fprintf(out_stream, "  -wNNN - this type of warnings will be ignored.\n");
-  fprintf(out_stream, "  To suppress warning for the whole file add comment '//-file:wNNN' (NNN is warning number) or '//-file:warning-text-id'.\n");
-  fprintf(out_stream, "  To suppress any single warning add comment '//-wNNN' to the end of line (NNN is warning number) or '//-warning-text-id'.\n\n");
+  fprintf(out_stream,
+    "  To suppress warning for the whole file add comment '//-file:wNNN' (NNN is warning number) or '//-file:warning-text-id'.\n");
+  fprintf(out_stream,
+    "  To suppress any single warning add comment '//-wNNN' to the end of line (NNN is warning number) or '//-warning-text-id'.\n\n");
 }
 
 
@@ -3561,6 +3609,11 @@ int process_single_source(const string & file_name, const string & source_code, 
   bool inverseWarnings = false;
   bool printAst = false;
 
+  bool printTokensToJson = false;
+  bool printAstToJson = false;
+  const char * tokensFileName = "";
+  const char * astFileName = "";
+
   for (int i = 1; i < argc__; i++)
   {
     const char * arg = argv__[i];
@@ -3572,13 +3625,22 @@ int process_single_source(const string & file_name, const string & source_code, 
         arg = "-duplicate-if-expression";
     }
 
-
-    if (!strcmp(arg, "--inverse-warnings"))
+    if (!strncmp(arg, "--tokens-output-file:", 21))
+    {
+      printTokensToJson = true;
+      tokensFileName = arg + 21;
+    }
+    else if (!strncmp(arg, "--ast-output-file:", 18))
+    {
+      printAstToJson = true;
+      astFileName = arg + 18;
+    }
+    else if (!strcmp(arg, "--inverse-warnings"))
       inverseWarnings = true;
     else if (!strncmp(arg, "--csq-exe:", 10))
       moduleexports::csq_exe = arg + 10;
-    else if (!strcmp(arg, "--print-ast"))
-      printAst = true;
+//    else if (!strcmp(arg, "--print-ast"))  // deprecated
+//      printAst = true;
     else if (!strncmp(arg, "--output-mode:", 14))
       ctx.outputMode = str_to_output_mode(arg + 14);
     else if (arg[0] == '-' && (toupper(arg[1]) == 'W') && isdigit(arg[2]))
@@ -3604,7 +3666,7 @@ int process_single_source(const string & file_name, const string & source_code, 
 
   if (file_name.empty())
   {
-    fprintf(out_stream, "ERROR: (2) Expected file name");
+    CompilationContext::globalError("Expected file name");
     return 1;
   }
 
@@ -3613,7 +3675,7 @@ int process_single_source(const string & file_name, const string & source_code, 
     ifstream tmp(file_name);
     if (tmp.fail())
     {
-      fprintf(out_stream, "ERROR: Cannot open file '%s'\n", file_name.c_str());
+      CompilationContext::globalError((string("Cannot open file '") + file_name.c_str() + "'").c_str());
       return 1;
     }
     ctx.code = string((std::istreambuf_iterator<char>(tmp)), std::istreambuf_iterator<char>());
@@ -3653,13 +3715,30 @@ int process_single_source(const string & file_name, const string & source_code, 
   if (expectError || expectWarningNumber)
     ctx.clearSuppressedWarnings();
 
+  if ((printTokensToJson || printAstToJson) && !CompilationContext::redirectMessagesToJson)
+  {
+    ctx.clearSuppressedWarnings();
+    ctx.inverseWarningsSuppression();
+  }
+
   Lexer lex(ctx);
 
   bool res = true;
   res = res && lex.process();
+
+  if (printTokensToJson)
+    res &= tokens_to_json(tokensFileName, lex);
+
+
   if (res)
   {
     Node * root = sq3_parse(lex); // do not delete, will be destroyed in ~CompilationContext()
+
+    if (printAstToJson)
+    {
+      res &= ast_to_json(astFileName, root);
+      res &= !ctx.isError;
+    }
 
     if (root && printAst)
       root->print();
@@ -3696,19 +3775,25 @@ int process_single_source(const string & file_name, const string & source_code, 
 
   if (expectError && !ctx.isError)
   {
-    fprintf(out_stream, "Expected error.\n");
+    CompilationContext::globalError("Expected error.");
     return 1;
   }
 
   if (expectWarningNumber && (!ctx.isWarning || ctx.shownWarningsAndErrors.size() != 1 ||
     ctx.shownWarningsAndErrors[0] != expectWarningNumber))
   {
-    fprintf(out_stream, "Expected only one warning 'w%d' in file '%s'.\n", expectWarningNumber, ctx.fileName.c_str());
+    CompilationContext::globalError((string("Expected only one warning 'w") +
+      to_string(expectWarningNumber) + "' in file '" + ctx.fileName + "'").c_str());
     return 1;
   }
 
   if (expectError || expectWarningNumber)
+  {
+    if (CompilationContext::getErrorLevel() != ERRORLEVEL_FATAL)
+      CompilationContext::clearErrorLevel();
+
     return 0;
+  }
 
   return res ? 0 : 1;
 }
@@ -3739,14 +3824,14 @@ int process_stream_file(const char * stream_file_name)
   ifstream tmp(stream_file_name);
   if (tmp.fail())
   {
-    fprintf(out_stream, "ERROR: Cannot open stream file '%s'\n", stream_file_name);
+    CompilationContext::globalError((string("Cannot open strem file '") + stream_file_name + "'").c_str());
     return 1;
   }
 
   string stream((std::istreambuf_iterator<char>(tmp)), std::istreambuf_iterator<char>());
   if (stream.empty())
   {
-    fprintf(out_stream, "ERROR: Stream file is empty '%s'\n", stream_file_name);
+    CompilationContext::globalError((string("Stream file is empty '") + stream_file_name + "'").c_str());
     return 1;
   }
 
@@ -3817,17 +3902,41 @@ int process_stream_file(const char * stream_file_name)
 }
 
 
-static int check_unrecorgnized_args_before_exit()
+static void check_unrecorgnized_args_before_exit()
 {
-  int returnCode = 0;
   for (int i = 1; i < argc__; i++)
     if (used_args.find(i) == used_args.end())
     {
+      CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
       fprintf(out_stream, "\nERROR: unrecognized argument \"%s\"\n", argv__[i]);
-      returnCode = 1;
     }
+}
 
-  return returnCode;
+
+void before_exit()
+{
+  if (CompilationContext::redirectMessagesToJson)
+    if (!compiler_messages_to_json(CompilationContext::redirectMessagesToJson))
+      CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
+
+  if (!json_write_files())
+    CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
+
+  fcloseall();
+}
+
+void before_exit_check_args()
+{
+  check_unrecorgnized_args_before_exit();
+
+  if (CompilationContext::redirectMessagesToJson)
+    if (!compiler_messages_to_json(CompilationContext::redirectMessagesToJson))
+    CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
+
+  if (!json_write_files())
+    CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
+
+  fcloseall();
 }
 
 
@@ -3836,11 +3945,23 @@ int main(int argc, char ** argv)
   argv__ = argv;
   argc__ = argc;
 
+  for (int i = 1; i < argc; i++)
+  {
+    const char * arg = argv[i];
+    if (!strncmp(arg, "--message-output-file:", 22))
+    {
+      used_args.insert(i);
+      CompilationContext::redirectMessagesToJson = arg + 22;
+      break;
+    }
+  }
+
+
   if (argc <= 1 || !strcmp(argv[1], "--help"))
   {
     used_args.insert(1);
     print_usage();
-    return check_unrecorgnized_args_before_exit();
+    return CompilationContext::getErrorLevel();
   }
 
 
@@ -3854,8 +3975,9 @@ int main(int argc, char ** argv)
       FILE * fo = fopen(outFileName, "wt");
       if (!fo)
       {
-        fprintf(out_stream, "ERROR: cannot open file '%s' for write.\n", outFileName);
-        return 1;
+        CompilationContext::globalError((string("Cannot open file '") + outFileName + "' for write.").c_str());
+        before_exit();
+        return CompilationContext::getErrorLevel();
       }
       else
       {
@@ -3868,8 +3990,12 @@ int main(int argc, char ** argv)
   {
     used_args.insert(1);
     CompilationContext::printAllWarningsList();
-    return check_unrecorgnized_args_before_exit();
+    before_exit_check_args();
+    return CompilationContext::getErrorLevel();
   }
+
+  bool printTokens = false;
+  bool printAst = false;
 
   const char * streamFile = nullptr;
   vector <string> fileList;
@@ -3891,6 +4017,12 @@ int main(int argc, char ** argv)
       used_args.insert(i);
     }
 
+    if (!strncmp(arg, "--tokens-output-file:", 21))
+      printTokens = true;
+
+    if (!strncmp(arg, "--ast-output-file:", 18))
+      printAst = true;
+
     bool isFiles = !strncmp(arg, "--files:", 8);
     bool isPredefinitionFiles = !strncmp(arg, "--predefinition-files:", 22);
     if (isPredefinitionFiles)
@@ -3903,8 +4035,9 @@ int main(int argc, char ** argv)
       ifstream tmp(fn);
       if (tmp.fail())
       {
-        fprintf(out_stream, "ERROR: Cannot open files list '%s'\n", fn);
-        return 1;
+        CompilationContext::globalError((string("Cannot open files list '") + fn + "'").c_str());
+        before_exit();
+        return CompilationContext::getErrorLevel();
       }
 
       string filesListString((std::istreambuf_iterator<char>(tmp)), std::istreambuf_iterator<char>());
@@ -3928,8 +4061,26 @@ int main(int argc, char ** argv)
 
 
   string sourceCode;
-
   int res = 0;
+
+
+  if (printTokens || printAst)
+  {
+    if (streamFile || fileList.size() != 1)
+    {
+      CompilationContext::globalError("Expected only single input .nut-file name");
+      before_exit();
+      return CompilationContext::getErrorLevel();
+    }
+
+    res |= process_single_source(fileList[0], sourceCode, string(), false, false);
+    if (res)
+      CompilationContext::setErrorLevel(ERRORLEVEL_WARNING);
+
+    return CompilationContext::getErrorLevel();
+  }
+
+
 
   if (streamFile)
   {
@@ -3939,9 +4090,9 @@ int main(int argc, char ** argv)
   {
     if (fileList.empty())
     {
-      fprintf(out_stream, "ERROR: (2) Expected file name");
-      fcloseall();
-      return 1;
+      CompilationContext::globalError("Expected file name");
+      before_exit();
+      return CompilationContext::getErrorLevel();
     }
 
     if (two_pass_scan)
@@ -3956,8 +4107,11 @@ int main(int argc, char ** argv)
       res |= process_single_source(fileName, sourceCode, string(), true, false);
   }
 
-  res |= check_unrecorgnized_args_before_exit();
-  fcloseall();
-  return res;
+  if (res)
+    CompilationContext::setErrorLevel(ERRORLEVEL_WARNING);
+
+  before_exit_check_args();
+
+  return CompilationContext::getErrorLevel();
 }
 

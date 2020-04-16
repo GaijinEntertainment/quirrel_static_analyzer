@@ -1,6 +1,7 @@
 #include "quirrel_lexer.h"
 #include <limits.h>
 #include <string.h>
+#include <algorithm>
 
 
 bool is_utf8_bom(const char * ptr, int i)
@@ -11,7 +12,7 @@ bool is_utf8_bom(const char * ptr, int i)
 
 #define STRINGIFY_MACRO(name) #name
 #define TOKEN_TYPE(x, y) STRINGIFY_MACRO(x) ,
-static const char * token_type_names[] =
+const char * token_type_names[] =
 {
   TOKEN_TYPES
   ""
@@ -47,6 +48,9 @@ int Lexer::nextChar()
 
   if (index > 0 && (s[index - 1] == 0x0a || (s[index - 1] == 0x0d && s[index] != 0x0a)))
   {
+    if ((index > 1 && isSpaceOrTab(s[index - 2])) || (index > 2 && s[index - 2] == '\r' && isSpaceOrTab(s[index - 3])))
+      ctx.warning("space-at-eol", curLine, curColumn - 1);
+
     curColumn = 1;
     curLine++;
   }
@@ -84,6 +88,7 @@ bool Lexer::isContinueOfIdent(int c)
 
 Lexer::Lexer(CompilationContext & compiler_context) :
   ctx(compiler_context),
+  isReaderMacro(false),
   s(compiler_context.code)
 {
   initializeTokenMaps();
@@ -91,6 +96,7 @@ Lexer::Lexer(CompilationContext & compiler_context) :
 
 Lexer::Lexer(CompilationContext & compiler_context, const std::string & code) :
   ctx(compiler_context),
+  isReaderMacro(false),
   s(code)
 {
   initializeTokenMaps();
@@ -106,7 +112,7 @@ void Lexer::print()
     const char * s = nullptr;
     char buf[64];
     if (tokens[i].type == TK_INTEGER)
-      snprintf(buf, 64, "%llu", tokens[i].u.i);
+      snprintf(buf, 64, "%llu", (long long unsigned int)tokens[i].u.i);
     if (tokens[i].type == TK_FLOAT)
       snprintf(buf, 64, "%g", tokens[i].u.d);
 
@@ -139,6 +145,12 @@ std::string Lexer::expandReaderMacro(const char * str, int & out_macro_length)
     curChar = *str;
     str++;
 
+    if (curChar == '\n' || curChar == '\r')
+    {
+      ctx.error(162, "new line inside interpolated string", curLine, curColumn + int(str - start));
+      return std::string();
+    }
+
     if (prevChar != '\\')
     {
       if (!insideStr1 && !insideStr2)
@@ -146,7 +158,7 @@ std::string Lexer::expandReaderMacro(const char * str, int & out_macro_length)
         if (depth > 0 && prevChar == '/' && (curChar == '/' || curChar == '*'))
         {
           ctx.error(160, "comments inside interpolated string are not supported", curLine, curColumn + int(str - start));
-          return 0;
+          return std::string();
         }
 
         if (curChar == '{')
@@ -515,6 +527,7 @@ bool Lexer::process()
         int baseColumn = tokens[tokens.size() - 1].column;
         int line = tokens[tokens.size() - 1].line;
         Lexer * macroLex = new Lexer(ctx, macro);
+        macroLex->isReaderMacro = true;
         if (macroLex->process() && !macroLex->tokens.empty())
         {
           for (auto & t : macroLex->tokens)
@@ -966,6 +979,18 @@ bool Lexer::process()
       ctx.error(114, "unexpected end of file inside string", curLine, curColumn);
     else if (insideRawString)
       ctx.error(115, "unexpected end of file inside raw string", curLine, curColumn);
+
+    if (!isReaderMacro)
+    {
+      if ((s.length() > 0 && isSpaceOrTab(s[s.length() - 1])))
+        ctx.warning("space-at-eol", std::max(curLine, 1), curColumn);
+
+      if ((s.length() > 1 && s[s.length() - 1] == '\n' && isSpaceOrTab(s[s.length() - 2])) ||
+        (s.length() > 2 && s[s.length() - 1] == '\n' && s[s.length() - 2] == '\r' && isSpaceOrTab(s[s.length() - 3])))
+      {
+        ctx.warning("space-at-eol", std::max(curLine - 1, 1), curColumn - 1);
+      }
+    }
   }
 
   if (!ctx.isError)

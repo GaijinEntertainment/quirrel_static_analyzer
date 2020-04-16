@@ -111,6 +111,8 @@ enum TokenType
 };
 #undef TOKEN_TYPE
 
+extern const char * token_type_names[];
+
 
 struct Token
 {
@@ -140,6 +142,7 @@ class Lexer
   bool insideComment;
   bool insideString;
   bool insideRawString;
+  bool isReaderMacro;
 
   void initializeTokenMaps();
   int nextChar();

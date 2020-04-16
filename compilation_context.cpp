@@ -8,6 +8,9 @@ using namespace std;
 FILE * out_stream = stdout;
 
 std::set<std::string> CompilationContext::shownMessages;
+std::vector<CompilerMessage> CompilationContext::compilerMessages;
+const char * CompilationContext::redirectMessagesToJson = nullptr;
+int CompilationContext::errorLevel = 0;
 
 struct AnalyzerMessage
 {
@@ -190,8 +193,8 @@ AnalyzerMessage analyzer_messages[] =
   },
   {
     240, "null-coalescing-priority",
-    "The '??' operator has a lower priority than the '%s' operator (a??b > c == a??(b > c)). "
-    "Perhaps the '??' operator works in a different way than it was expected."
+    "The '??""' operator has a lower priority than the '%s' operator (a??b > c == a??""(b > c)). "
+    "Perhaps the '??""' operator works in a different way than it was expected."
   },
   {
     241, "already-required",
@@ -337,6 +340,10 @@ AnalyzerMessage analyzer_messages[] =
     276, "empty-then",
     "'then' has empty body."
   },
+  {
+    277, "space-at-eol",
+    "Whitespace at the end of line."
+  },
 };
 
 
@@ -408,6 +415,8 @@ void CompilationContext::error(int error_code, const char * error, int line, int
   if (isError)
     return;
 
+  setErrorLevel(ERRORLEVEL_ERROR);
+
   isError = true;
 
   string hash = std::to_string(error_code) + std::to_string(line) + "_" + std::to_string(col) +
@@ -419,13 +428,43 @@ void CompilationContext::error(int error_code, const char * error, int line, int
   std::string nearestStrings, curString;
   getNearestStrings(line, nearestStrings, curString);
 
-  if (outputMode == OM_1_LINE)
-    fprintf(out_stream, "ERR: e%d %s  %s:%d:%d\n", error_code, error, only_file_name_and_ext(fileName.c_str()), line, col);
-  else if (outputMode == OM_2_LINES)
-    fprintf(out_stream, "ERROR: e%d %s\n  %s:%d:%d\n", error_code, error, fileName.c_str(), line, col);
-  else
-    fprintf(out_stream, "ERROR: e%d %s\nat %s:%d:%d\n%s\n\n\n", error_code, error, fileName.c_str(), line, col, nearestStrings.c_str());
+  if (!redirectMessagesToJson)
+  {
+    if (outputMode == OM_1_LINE)
+      fprintf(out_stream, "ERR: e%d %s  %s:%d:%d\n", error_code, error, only_file_name_and_ext(fileName.c_str()), line, col);
+    else if (outputMode == OM_2_LINES)
+      fprintf(out_stream, "ERROR: e%d %s\n  %s:%d:%d\n", error_code, error, fileName.c_str(), line, col);
+    else
+      fprintf(out_stream, "ERROR: e%d %s\nat %s:%d:%d\n%s\n\n\n", error_code, error, fileName.c_str(), line, col, nearestStrings.c_str());
+  }
   shownWarningsAndErrors.push_back(error_code);
+
+  CompilerMessage cm;
+  cm.line = line;
+  cm.column = col;
+  cm.intId = error_code;
+  cm.isError = true;
+  cm.message = error;
+  cm.fileName = fileName;
+  compilerMessages.push_back(cm);
+}
+
+
+void CompilationContext::globalError(const char * error)
+{
+  CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
+
+  if (!redirectMessagesToJson)
+    fprintf(out_stream, "ERROR: %s\n", error);
+
+  CompilerMessage cm;
+  cm.line = 0;
+  cm.column = 0;
+  cm.intId = 0;
+  cm.isError = true;
+  cm.message = error;
+  cm.fileName = "";
+  compilerMessages.push_back(cm);
 }
 
 
@@ -474,6 +513,16 @@ void CompilationContext::warning(const char * text_id, const Token & tok, const 
 
   int line = tok.line;
   int col = tok.column;
+
+  if (size_t(arg0) == 1)
+  {
+    line = int(size_t(arg1));
+    col = int(size_t(arg2));
+    arg0 = nullptr;
+    arg1 = nullptr;
+    arg2 = nullptr;
+  }
+
   std::string nearestStrings, curString;
   getNearestStrings(line, nearestStrings, curString);
 
@@ -491,20 +540,41 @@ void CompilationContext::warning(const char * text_id, const Token & tok, const 
 
   shownMessages.insert(hash);
 
-
   char warningText[512] = { 0 };
   snprintf(warningText, sizeof(warningText), analyzer_messages[msgIndex].messageText, arg0, arg1, arg2, arg3);
 
-  if (outputMode == OM_1_LINE)
-    fprintf(out_stream, "WARN: %s  %s:%d:%d\n", text_id, only_file_name_and_ext(fileName.c_str()), line, col);
-  else if (outputMode == OM_2_LINES)
-    fprintf(out_stream, "WARNING: w%d (%s)  %s\n  %s:%d:%d\n", warningCode, text_id, warningText, fileName.c_str(), line, col);
-  else
-    fprintf(out_stream, "WARNING: w%d (%s)  %s\nat %s:%d:%d\n%s\n\n\n", warningCode, text_id, warningText, fileName.c_str(),
-      line, col, nearestStrings.c_str());
+  if (!redirectMessagesToJson)
+  {
+    if (outputMode == OM_1_LINE)
+      fprintf(out_stream, "WARN: %s  %s:%d:%d\n", text_id, only_file_name_and_ext(fileName.c_str()), line, col);
+    else if (outputMode == OM_2_LINES)
+      fprintf(out_stream, "WARNING: w%d (%s)  %s\n  %s:%d:%d\n", warningCode, text_id, warningText, fileName.c_str(), line, col);
+    else
+      fprintf(out_stream, "WARNING: w%d (%s)  %s\nat %s:%d:%d\n%s\n\n\n", warningCode, text_id, warningText, fileName.c_str(),
+        line, col, nearestStrings.c_str());
+  }
 
   isWarning = true;
+  setErrorLevel(ERRORLEVEL_WARNING);
   shownWarningsAndErrors.push_back(warningCode);
+
+  CompilerMessage cm;
+  cm.line = line;
+  cm.column = col;
+  cm.intId = warningCode;
+  cm.textId = text_id;
+  cm.isError = false;
+  cm.message = warningText;
+  cm.fileName = fileName;
+
+  compilerMessages.push_back(cm);
+}
+
+
+void CompilationContext::warning(const char * text_id, int line, int col)
+{
+  static Token emptyToken;
+  warning(text_id, emptyToken, (const char *)(1), (const char *)(size_t(line)), (const char *)(size_t(col)));
 }
 
 
@@ -611,3 +681,21 @@ void CompilationContext::printAllWarningsList()
     fprintf(out_stream, "\n\n");
   }
 }
+
+void CompilationContext::setErrorLevel(int error_level)
+{
+  if (error_level > errorLevel)
+    errorLevel = error_level;
+}
+
+int CompilationContext::getErrorLevel()
+{
+  return errorLevel;
+}
+
+void CompilationContext::clearErrorLevel()
+{
+  errorLevel = 0;
+}
+
+

@@ -88,7 +88,6 @@ struct Node : public CompilationContext::Poolable
 {
   Token & tok;
   NodeType nodeType;
-  std::vector<std::string> params;
   std::vector<Node *> children;
 
   Node(CompilationContext & ctx_, Token & token) :
@@ -103,7 +102,7 @@ struct Node : public CompilationContext::Poolable
   {
     char buf[64];
     if (tok.type == TK_INTEGER)
-      snprintf(buf, 64, "%llu", tok.u.i);
+      snprintf(buf, 64, "%llu", (long long unsigned int)tok.u.i);
     if (tok.type == TK_FLOAT)
       snprintf(buf, 64, "%g", tok.u.d);
 

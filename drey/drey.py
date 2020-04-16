@@ -85,7 +85,10 @@ def gather_files_in_predefinition_paths(config, config_path):
     for pp in predefinition_paths:
         combined_path = os.path.normpath(os.path.join(config_path, pp))
         print("Collecting predefinition files at {0}\n".format(combined_path))
-        out = shell("call dir /b/s {0} | findstr \\.nut$".format(combined_path)).decode('utf-8')
+        if os.name == 'nt' :
+            out = shell("call dir /b/s {0} | findstr \\.nut$".format(combined_path)).decode('utf-8')
+        else:
+            out = shell("find {0} -name \"*.nut\"".format(combined_path)).decode('utf-8')
         list_file.write(out)
 
     list_file.close()

@@ -7,6 +7,10 @@
 
 #if defined(_WIN32)
 #  include <process.h>
+#  define NULL_FILE_NAME "nul"
+#else
+#  include <unistd.h>
+#  define NULL_FILE_NAME "/dev/null"
 #endif
 
 using namespace std;
@@ -57,12 +61,11 @@ namespace moduleexports
 #if defined(_WIN32)
     snprintf(uniq, sizeof(uniq), "%d", _getpid());
 #else
-    strcpy(uniq, "XXXXXX");
-    mkstemp(uniq);
+    snprintf(uniq, sizeof(uniq), "%d", getpid());
 #endif
 
-    char nutFileName[L_tmpnam] = { 0 };
-    char outputFileName[L_tmpnam] = { 0 };
+    char nutFileName[512] = { 0 };
+    char outputFileName[512] = { 0 };
     snprintf(nutFileName, sizeof(nutFileName), "%s%s~nut%s.%d.tmp", ctx.fileDir.c_str(),
       ctx.fileDir.empty() ? "" : "/", uniq, tmp_cnt);
     snprintf(outputFileName, sizeof(outputFileName), "~out%s.%d.tmp", uniq, tmp_cnt);
@@ -74,6 +77,7 @@ namespace moduleexports
     FILE * fnut = fopen(nutFileName, "wt");
     if (!fnut)
     {
+      CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
       ctx.error(70, "Export collector: Cannot create temporary file.", line, col);
       return false;
     }
@@ -86,9 +90,11 @@ namespace moduleexports
 
     if (system((csq_exe + " \"" + nutFileName + "\" > " + outputFileName).c_str()))
     {
-      if (system((csq_exe + " --version > nul").c_str()))
+      if (system((csq_exe + " --version > " NULL_FILE_NAME).c_str()))
       {
-        ctx.error(72, string("Export collector: '" + csq_exe + "' not found. You may disable warning w242 to continue.").c_str(),
+        CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
+        ctx.error(72, string("Export collector: '" + csq_exe +
+          "' not found. You may disable warnings -w242 and -w246 to continue.").c_str(),
           line, col);
         remove(outputFileName);
         remove(nutFileName);
@@ -107,6 +113,7 @@ namespace moduleexports
     FILE * fout = fopen(outputFileName, "rt");
     if (!fout)
     {
+      CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
       ctx.error(73, "Export collector: cannot open results of module execution.", line, col);
       return false;
     }
@@ -181,6 +188,7 @@ namespace moduleexports
 
     if (isError && moduleContent.empty() && moduleRoot.empty())
     {
+      CompilationContext::setErrorLevel(ERRORLEVEL_FATAL);
       ctx.error(74, (string("Export collector: failed to require '") +
         (module_name ? module_name : "<null>") + "'.").c_str(), line, col);
       return false;

@@ -18,10 +18,38 @@ enum OutputMode
   OM_FULL,
 };
 
+enum ErrorLevels
+{
+  ERRORLEVEL_WARNING = 2,
+  ERRORLEVEL_ERROR = 3,
+  ERRORLEVEL_FATAL = 4,
+};
+
+struct CompilerMessage
+{
+  int line;
+  int column;
+  int intId;
+  const char * textId;
+  std::string message;
+  std::string fileName;
+  bool isError;
+
+  CompilerMessage()
+  {
+    line = 0;
+    column = 0;
+    intId = 0;
+    textId = "";
+    isError = false;
+  }
+};
+
 class CompilationContext
 {
   std::vector<int> suppressWarnings;
   static std::set<std::string> shownMessages;
+  static int errorLevel;
 
 public:
 
@@ -41,6 +69,11 @@ public:
   std::string fileDir;
   std::string code;
   std::vector<int> shownWarningsAndErrors;
+  static std::vector<CompilerMessage> compilerMessages;
+  static const char * redirectMessagesToJson;
+  static void setErrorLevel(int error_level);
+  static int getErrorLevel();
+  static void clearErrorLevel();
   bool isError;
   bool isWarning;
   OutputMode outputMode;
@@ -50,6 +83,8 @@ public:
   void setFileName(const std::string & file_name);
   void getNearestStrings(int line_num, std::string & nearest_strings, std::string & cur_string) const;
   void error(int error_code, const char * error, int line, int col);
+  static void globalError(const char * error);
+  void warning(const char * text_id, int line, int col);
   void warning(const char * text_id, const Token & tok, const char * arg0 = "???", const char * arg1 = "???",
     const char * arg2 = "???", const char * arg3 = "???");
   void offsetToLineAndCol(int offset, int & line, int & col) const;
