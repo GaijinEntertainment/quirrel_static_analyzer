@@ -2,10 +2,8 @@
 // AUTO-GENERATED FILE - DO NOT EDIT!!
 //
 
-"//local function dump_table() { return require(\"F:/dagor4/prog/1stPartyLibs/sq3_"
-"static_analyzer/test_module.nut\"); }\n"
 "\n"
-"local dag_system = require(\"dagor.system\");\n"
+"local dag_system = require_optional(\"dagor.system\") ?? require(\"system\");\n"
 "local print_table = true;\n"
 "foreach (a in dag_system.argv)\n"
 "  if (a == \"--dont-print-table\")\n"

@@ -1,6 +1,5 @@
-//local function dump_table() { return require("F:/dagor4/prog/1stPartyLibs/sq3_static_analyzer/test_module.nut"); }
 
-local dag_system = require("dagor.system");
+local dag_system = require_optional("dagor.system") ?? require("system");
 local print_table = true;
 foreach (a in dag_system.argv)
   if (a == "--dont-print-table")
