@@ -18,6 +18,7 @@ set(SOURCE
   quirrel_lexer.cpp
   quirrel_parser.cpp
   quirrel_static_analyzer.cpp
+  json_output.cpp
 )
 
 add_executable(quirrel_static_analyzer ${SOURCE})
