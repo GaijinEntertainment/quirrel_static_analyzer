@@ -3,9 +3,10 @@
 //
 
 "\n"
-"local dag_system = require_optional(\"dagor.system\") ?? require(\"system\");\n"
+"local dag_system = require_optional(\"dagor.system\")\n"
+"local argv = dag_system?.argv ?? ::__argv;\n"
 "local print_table = true;\n"
-"foreach (a in dag_system.argv)\n"
+"foreach (a in argv)\n"
 "  if (a == \"--dont-print-table\")\n"
 "    print_table = false;\n"
 "\n"

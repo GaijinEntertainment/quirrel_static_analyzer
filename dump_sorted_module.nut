@@ -1,7 +1,8 @@
 
-local dag_system = require_optional("dagor.system") ?? require("system");
+local dag_system = require_optional("dagor.system")
+local argv = dag_system?.argv ?? ::__argv;
 local print_table = true;
-foreach (a in dag_system.argv)
+foreach (a in argv)
   if (a == "--dont-print-table")
     print_table = false;
 

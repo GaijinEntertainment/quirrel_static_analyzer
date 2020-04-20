@@ -1,14 +1,35 @@
-find . -name "*.nut" > ~nuts.tmp
+error=""
 
-../../../../../tools/dagor3_cdk/util-linux64/sq3_static_analyzer-dev \
-  --csq-exe:../../../../../tools/dagor3_cdk/util-linux64/csq-dev \
+find . -name "*.nut" > ~nuts.tmp
+find . -name "*.nut.txt" >> ~nuts.tmp
+find ./expected_compiler_error -name "*.txt" >> ~nuts.tmp
+
+sq3_static_analyzer \
+  "--csq-exe:sq -m" \
   --files:~nuts.tmp --output:analysis_log.txt
 
-if [ $? -eq 0 ]
+if [ $? -ne 0 ]
 then
-  echo "OK"
+  error="BASE TEST"
 else
-  echo "FAIL"
+  sq3_static_analyzer \
+    "--csq-exe:sq -m" \
+    --predefinition-files:~nuts.tmp --files:~nuts.tmp --output:analysis_log.txt
+
+  if [ $? -ne 0 ]
+  then
+    error="2 PASS SQ"
+  fi
 fi
 
+
 rm ~nuts.tmp
+
+if [[ $error == "" ]]
+then
+  echo "OK"
+  exit 0
+else
+  echo "FAIL:" $error
+  exit 1
+fi
