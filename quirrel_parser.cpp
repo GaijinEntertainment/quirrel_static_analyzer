@@ -9,14 +9,42 @@ const char * node_type_names[] =
 };
 #undef NODE_TYPE
 
-
 static Token emptyToken;
 
-
-class Parser
+struct Parser
 {
   CompilationContext & ctx;
   int pos;
+
+  enum ExpressionContext
+  {
+    EC_USUAL = 0,
+    EC_CONDITION,
+  };
+  vector<ExpressionContext> expressionContext;
+
+  Lexer & lexer;
+  vector<Token> & tokens;
+  Token * tok;
+
+  Parser(Lexer & lexer_) :
+    lexer(lexer_),
+    tokens(lexer_.tokens),
+    ctx(lexer_.getCompilationContext())
+  {
+    pos = 0;
+    tok = tokens.empty() ? &emptyToken : &tokens[pos];
+    expressionContext.push_back(EC_USUAL);
+  }
+
+
+#define EXPRESSION_CONTEXT_SCOPE(ctx) \
+    struct ExprContextScope \
+    { \
+      vector<ExpressionContext> & ec; \
+      ExprContextScope(vector<ExpressionContext> & expressionContext) : ec(expressionContext) { ec.push_back(ctx); } \
+      ~ExprContextScope() { ec.pop_back(); } \
+    } exprContextScope(expressionContext);
 
   bool expect(TokenType token_type)
   {
@@ -220,6 +248,31 @@ class Parser
       n->children.push_back(declarator);
     }
 
+    return n;
+  }
+
+  Node * createImportVarDeclarationNode(vector<Node *> var_keys)
+  {
+    Node * n = new Node(ctx, emptyToken);
+    n->nodeType = PNT_IMPORT_VAR_DECLARATION;
+
+    for (size_t i = 0; i < var_keys.size(); i++)
+    {
+      Node * declarator = new Node(ctx, var_keys[i]->tok);
+      declarator->nodeType = PNT_VAR_DECLARATOR;
+      declarator->children.push_back(var_keys[i]);
+      n->children.push_back(declarator);
+    }
+
+    return n;
+  }
+
+  Node * createInexprVarDeclaratorNode(Token & t, Node * key, Node * value)
+  {
+    Node * n = new Node(ctx, t);
+    n->nodeType = PNT_INEXPR_VAR_DECLARATOR;
+    n->children.push_back(key);
+    n->children.push_back(value);
     return n;
   }
 
@@ -508,23 +561,11 @@ class Parser
     return n;
   }
 
-public:
-  Lexer & lexer;
-  vector<Token> & tokens;
-  Token * tok;
-
-  Parser(Lexer & lexer_) :
-    lexer(lexer_),
-    tokens(lexer_.tokens),
-    ctx(lexer_.getCompilationContext())
-  {
-    pos = 0;
-    tok = tokens.empty() ? &emptyToken : &tokens[pos];
-  }
-
 
   Node * parseArrayCreation()
   {
+    EXPRESSION_CONTEXT_SCOPE(EC_USUAL);
+
     Token & opToken = *tok;
     std::vector<Node *> values;
     if (accept(TK_RSQUARE))
@@ -562,6 +603,8 @@ public:
 
   Node * parseTableCreation()
   {
+    EXPRESSION_CONTEXT_SCOPE(EC_USUAL);
+
     Token & opToken = *tok;
     std::vector<Node *> keys;
     std::vector<Node *> values;
@@ -578,7 +621,8 @@ public:
       if (accept(TK_IDENTIFIER))
       {
         key = createIdentifierNode(*tok);
-        expect(TK_ASSIGN);
+        if (!accept(TK_ASSIGN))
+          value = createIdentifierNode(*tok);
       }
       else if (accept(TK_LSQUARE))
       {
@@ -678,7 +722,7 @@ public:
     else if (accept(TK_LPAREN))
     {
       Token & tk = *tok;
-      Node * expression = parseTernaryOp();
+      Node * expression = (expressionContext.back() == EC_CONDITION) ? parseInexprLocal() : parseTernaryOp();
       res = createParenNode(tk, expression);
       expect(TK_RPAREN);
     }
@@ -899,8 +943,9 @@ public:
   DECL_PARSE_BIN_OP_FUNCTION(parseFactor, accept(TK_MUL) || accept(TK_DIV) || accept(TK_MODULO), parseUnaryOp, false);
   DECL_PARSE_BIN_OP_FUNCTION(parseSum, accept(TK_PLUS) || accept(TK_MINUS), parseFactor, false);
   DECL_PARSE_BIN_OP_FUNCTION(parseShift, accept(TK_SHIFTL) || accept(TK_SHIFTR) || accept(TK_USHIFTR), parseSum, false);
-  DECL_PARSE_BIN_OP_FUNCTION(
-    parseLsGt,accept(TK_LS) || accept(TK_GT) || accept(TK_LE) || accept(TK_GE) || accept(TK_IN) || accept(TK_INSTANCEOF),
+  DECL_PARSE_BIN_OP_FUNCTION(parseLsGt,
+    accept(TK_LS) || accept(TK_GT) || accept(TK_LE) || accept(TK_GE) ||
+    accept(TK_IN) || accept(TK_NOTIN) || accept(TK_INSTANCEOF),
     parseShift, false);
   DECL_PARSE_BIN_OP_FUNCTION(parseEq, accept(TK_EQ) || accept(TK_NE) || accept(TK_3WAYSCMP), parseLsGt, false);
   DECL_PARSE_BIN_OP_FUNCTION(parseBitAnd, accept(TK_BITAND) || false, parseEq, false);
@@ -948,10 +993,33 @@ public:
     return res;
   }
 
+
   DECL_PARSE_BIN_OP_FUNCTION(parseAssignExpression,
     accept(TK_ASSIGN) || accept(TK_PLUSEQ) || accept(TK_MINUSEQ) || accept(TK_MULEQ) || accept(TK_DIVEQ) ||
       accept(TK_MODEQ) || accept(TK_NEWSLOT),
     parseTernaryOp, true);
+
+
+  DECL_PARSE_BIN_OP_FUNCTION(parseInexprAssignExpression,
+    accept(TK_INEXPR_ASSIGNMENT),
+    parseTernaryOp, true);
+
+
+  Node * parseInexprLocal()
+  {
+    if (accept(TK_LOCAL))
+    {
+      Token & tk = *tok;
+      expect(TK_IDENTIFIER);
+      Node * key = createIdentifierNode(*tok);
+      expect(TK_INEXPR_ASSIGNMENT);
+      Node * value = parseTernaryOp();
+      return createInexprVarDeclaratorNode(tk, key, value);
+    }
+
+    return parseInexprAssignExpression();
+  }
+
 
   bool isEndOfStatement()
   {
@@ -1052,6 +1120,8 @@ public:
 
   Node * parseFunction(FunctionType function_type)
   {
+    EXPRESSION_CONTEXT_SCOPE(EC_USUAL);
+
     Token * tk = tok;
     Node * functionName = nullptr;
 
@@ -1183,6 +1253,8 @@ public:
 
   Node * parseClass(Token * class_token, bool expect_class_name, bool is_local)
   {
+    EXPRESSION_CONTEXT_SCOPE(EC_USUAL);
+
     Node * className = nullptr;
     Node * extends = nullptr;
     vector<Node *> classMembers;
@@ -1319,6 +1391,24 @@ public:
     Node * name = createIdentifierNode(*tok);
     expect(TK_ASSIGN);
     Node * value = parseTernaryOp();
+
+#define ACCEPT_ONLY_SCALAR_CONST 1
+#if (ACCEPT_ONLY_SCALAR_CONST)
+    Node * check = value;
+    if (check->nodeType == PNT_UNARY_PRE_OP && check->tok.type == TK_MINUS && check->children.size() == 1 &&
+      (check->children[0]->nodeType == PNT_FLOAT || check->children[0]->nodeType == PNT_INTEGER))
+    {
+      check = value->children[0];
+    }
+
+    if (check && check->nodeType != PNT_INTEGER && check->nodeType != PNT_BOOL && check->nodeType != PNT_FLOAT &&
+      check->nodeType != PNT_STRING)
+    {
+      ctx.error(130, "expected scalar (boolean, integer, float, string)", check->tok.line, check->tok.column);
+    }
+
+#endif
+
     return createConstDeclarationNode(*const_token, name, value, is_global);
   }
 
@@ -1407,7 +1497,9 @@ public:
 
       Token * tk = tok;
       expect(TK_LPAREN);
-      Node * expression = parseTernaryOp();
+      expressionContext.push_back(EC_CONDITION);
+      Node * expression = parseInexprLocal();
+      expressionContext.pop_back();
       expect(TK_RPAREN);
       checkBraceIdentationStyle();
       Node * ifTrue = parseStatement(true);
@@ -1451,7 +1543,9 @@ public:
     {
       Token * tk = tok;
       expect(TK_LPAREN);
-      Node * expression = parseTernaryOp();
+      expressionContext.push_back(EC_CONDITION);
+      Node * expression = parseInexprLocal();
+      expressionContext.pop_back();
       expect(TK_RPAREN);
       checkBraceIdentationStyle();
       Node * loopBody = parseStatement(true);
@@ -1502,7 +1596,9 @@ public:
 
       if (!accept(TK_SEMICOLON))
       {
-        expression = parseTernaryOp();
+        expressionContext.push_back(EC_CONDITION);
+        expression = parseInexprLocal();
+        expressionContext.pop_back();
         expect(TK_SEMICOLON);
       }
 
@@ -1661,6 +1757,7 @@ public:
 
   Node * parseStatementList(Token & statement_list_token, int depth, bool inside_switch, bool single_statement)
   {
+    EXPRESSION_CONTEXT_SCOPE(EC_USUAL);
     Node * statements = new Node(ctx, statement_list_token);
     statements->nodeType = PNT_STATEMENT_LIST;
     if (depth > 0 && forwardToken(0) == TK_RBRACE)
@@ -1691,6 +1788,25 @@ public:
   }
 };
 
+static Node * precess_import(Lexer & lex, Parser & parser)
+{
+  vector<Node *> vars;
+
+  // HACK: add tokens after TK_EOF
+  for (auto && im: lex.ctx.imports)
+    for (auto && slot : im.slots)
+      if (!slot.importAsIdentifier.empty())
+      {
+        lex.ctx.stringList.insert(slot.importAsIdentifier);
+        auto listIt = lex.ctx.stringList.find(slot.importAsIdentifier);
+        Token::U u;
+        u.s = listIt->c_str();
+        lex.tokens.push_back({ (TokenType)TK_IDENTIFIER, false, false, (unsigned short)slot.column, slot.line, u });
+        vars.push_back(parser.createIdentifierNode(lex.tokens.back()));
+      }
+
+  return vars.size() ? parser.createImportVarDeclarationNode(vars) : nullptr;
+}
 
 Node * sq3_parse(Lexer & lex)
 {
@@ -1700,5 +1816,10 @@ Node * sq3_parse(Lexer & lex)
   emptyToken.u.i = 0;
 
   Parser parser(lex);
-  return parser.parseStatementList(emptyToken, 0, false, false);
+  Node * res = parser.parseStatementList(emptyToken, 0, false, false);
+  Node * imports = precess_import(lex, parser);
+  if (imports)
+    res->children.insert(res->children.begin(), 1, imports);
+
+  return res;
 }

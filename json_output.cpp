@@ -95,6 +95,9 @@ bool get_tokens_as_string(Lexer & lexer, string & s)
     s += buf;
     s += "}";
     first = false;
+
+    if (tok.type == TK_EOF)
+      break;
   }
 
   s += "]";

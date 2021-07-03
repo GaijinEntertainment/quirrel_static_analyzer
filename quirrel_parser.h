@@ -39,6 +39,7 @@
   NODE_TYPE(PNT_GLOBAL_CONST_DECLARATION, "global-const-declaration") \
   NODE_TYPE(PNT_LOCAL_VAR_DECLARATION, "local-var-declaration") \
   NODE_TYPE(PNT_VAR_DECLARATOR, "var-declarator") \
+  NODE_TYPE(PNT_INEXPR_VAR_DECLARATOR, "inexpr-var-declarator") \
   NODE_TYPE(PNT_EMPTY_STATEMENT, "empty-statement") \
   NODE_TYPE(PNT_STATEMENT_LIST, "statement-list") \
   NODE_TYPE(PNT_IF_ELSE, "if-else") \
@@ -72,6 +73,7 @@
   NODE_TYPE(PNT_GLOBAL_ENUM, "global-enum") \
   NODE_TYPE(PNT_ENUM_MEMBER, "enum-member") \
   NODE_TYPE(PNT_DOCSTRING, "docstring") \
+  NODE_TYPE(PNT_IMPORT_VAR_DECLARATION, "import-var-declaration") \
 
 
 #define NODE_TYPE(x, y) x,

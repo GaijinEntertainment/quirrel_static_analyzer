@@ -4,6 +4,7 @@ format_function_name = TEST_F
 function_can_return_null = canReturnNull
 function_calls_lambda_inplace = calls_lambda_inplace
 std_identifier = vargv_std
+forbidden_function = dlog
 
 include config_include_dir/sq_config_include.inc
 

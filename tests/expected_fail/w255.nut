@@ -4,7 +4,7 @@ class ClassName {
   function onTimer2(obj, dt, dt2) {
     local curOffs = obj.cur_slide_offs.tofloat()
 
-    local pos = obj.getPos()
+//    local pos = obj.getPos()
     local size = obj.getSize()
     local parentSize = obj.getParent().getSize()
     local speedCreditsScroll = (size[1] / parentSize[1] ) / ::timeToShowAll
@@ -26,7 +26,7 @@ class ClassName {
   function onTimer(obj, dt, dt) {
     local curOffs = obj.cur_slide_offs.tofloat()
 
-    local pos = obj.getPos()
+//    local pos = obj.getPos()
     local size = obj.getSize()
     local parentSize = obj.getParent().getSize()
     local speedCreditsScroll = (size[1] / parentSize[1] ) / ::timeToShowAll

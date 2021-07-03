@@ -344,6 +344,42 @@ AnalyzerMessage analyzer_messages[] =
     277, "space-at-eol",
     "Whitespace at the end of line."
   },
+  {
+    278, "forbidden-function",
+    "It is forbidden to call '%s' function."
+  },
+  {
+    279, "mismatch-loop-variable",
+    "The variable used in for-loop does not match the initialized one."
+  },
+  {
+    280, "forbidden-parent-dir",
+    "Access to the parent directory is forbidden in this function."
+  },
+  {
+    281, "unwanted-modification",
+    "Function '%s' modifies object. You probably didn't want to modify the object here."
+  },
+  {
+    282, "inexpr-assign-priority",
+    "Operator ':=' has lower priority. Perhaps parentheses are missing?"
+  },
+  {
+    283, "useless-null-coalescing",
+    "The expression to the right of the '??""' is null."
+  },
+  {
+    284, "can-be-simplified",
+    "Expression can be simplified."
+  },
+  {
+    285, "expr-cannot-be-null",
+    "The expression to the left of the '%s' cannot be null."
+  },
+  {
+    286, "func-in-expression",
+    "Function used in expression."
+  },
 };
 
 
@@ -353,6 +389,7 @@ CompilationContext::CompilationContext()
   isError = false;
   isWarning = false;
   outputMode = OM_FULL;
+  firstLineAfterImport = 0;
 }
 
 

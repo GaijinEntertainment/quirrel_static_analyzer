@@ -1,5 +1,5 @@
 //expect:w214
-local test = false
+local test = ::f
 
 enum REPLAY {
   SKIRMISH = 2

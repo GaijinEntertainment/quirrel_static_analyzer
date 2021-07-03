@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <stdio.h>
+#include "quirrel/importParser/importParser.h"
 
 bool is_utf8_bom(const char * ptr, int i);
 
@@ -69,11 +70,13 @@ public:
   std::string fileDir;
   std::string code;
   std::vector<int> shownWarningsAndErrors;
+  std::vector<sqimportparser::ModuleImport> imports;
   static std::vector<CompilerMessage> compilerMessages;
   static const char * redirectMessagesToJson;
   static void setErrorLevel(int error_level);
   static int getErrorLevel();
   static void clearErrorLevel();
+  int firstLineAfterImport;
   bool isError;
   bool isWarning;
   OutputMode outputMode;

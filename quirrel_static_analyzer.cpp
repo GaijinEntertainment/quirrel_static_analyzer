@@ -23,6 +23,7 @@
 
 
 using namespace std;
+using namespace sqimportparser;
 
 
 static bool variable_presense_check = true;
@@ -102,10 +103,18 @@ bool is_cmp_op_with_bool_result(TokenType type)
   return type == TK_EQ || type == TK_NE || type == TK_LE || type == TK_LS || type == TK_GE || type == TK_GT;
 }
 
+bool is_bool_result(TokenType type)
+{
+  return type == TK_EQ || type == TK_NE || type == TK_GT || type == TK_GE ||
+         type == TK_LS || type == TK_LE || type == TK_IN || type == TK_NOTIN ||
+         type == TK_AND || type == TK_OR;
+}
+
 namespace settings
 {
   string cur_config_file_name = "?";
   bool cur_config_file_failed = false;
+  vector<string> forbidden_function;
   vector<string> format_function_name;
   vector<string> function_can_return_null;
   vector<string> function_calls_lambda_inplace;
@@ -115,9 +124,13 @@ namespace settings
   vector<string> function_can_return_string;
   vector<string> function_should_return_bool_prefix;
   vector<string> function_should_return_something_prefix;
+  vector<string> function_forbidden_parent_dir;
+  vector<string> function_modifies_object;
 
   void reset()
   {
+    forbidden_function = { };
+
     format_function_name =
     {
       "prn",
@@ -159,6 +172,7 @@ namespace settings
       "vargv",
       "persist",
       "getclass",
+      "keepref",
     };
 
     std_function =
@@ -241,6 +255,19 @@ namespace settings
       "get",
       "Get",
     };
+
+    function_forbidden_parent_dir =
+    {
+      "require",
+      "require_optional",
+    };
+
+    function_modifies_object =
+    {
+      "extend",
+      "append",
+      "__update",
+    };
   }
 
 
@@ -270,6 +297,9 @@ namespace settings
       format_function_name.push_back(functionName);
     }
 
+    for (auto && v : config.getValuesList("forbidden_function"))
+      forbidden_function.push_back(v);
+
     for (auto && v : config.getValuesList("function_can_return_null"))
       function_can_return_null.push_back(v);
 
@@ -293,6 +323,12 @@ namespace settings
 
     for (auto && v : config.getValuesList("function_should_return_something_prefix"))
       function_should_return_something_prefix.push_back(v);
+
+    for (auto && v : config.getValuesList("function_forbidden_parent_dir"))
+      function_forbidden_parent_dir.push_back(v);
+
+    for (auto && v : config.getValuesList("function_modifies_object"))
+      function_modifies_object.push_back(v);
 
     return true;
   }
@@ -662,6 +698,39 @@ static bool global_collect_tree(Node * node, IdentTree * tree)
 }
 
 
+static bool has_inexpr_var_decl_in_tree(const char * ident, Node * node, bool is_statement)
+{
+  if (!node)
+    return false;
+
+  if (is_statement)
+  {
+    if (node->nodeType == PNT_IF_ELSE || node->nodeType == PNT_WHILE_LOOP || node->nodeType == PNT_SWITCH_STATEMENT)
+      return has_inexpr_var_decl_in_tree(ident, node->children[0], false);
+    else if (node->nodeType == PNT_FOR_LOOP)
+      return has_inexpr_var_decl_in_tree(ident, node->children[1], false);
+  }
+  else
+  {
+    if (node->nodeType == PNT_INEXPR_VAR_DECLARATOR && node->children[0]->nodeType == PNT_IDENTIFIER)
+      if (!strcmp(node->children[0]->tok.u.s, ident))
+        return true;
+
+    if (node->nodeType == PNT_EXPRESSION_PAREN || node->nodeType == PNT_BINARY_OP ||
+      node->nodeType == PNT_TERNARY_OP || node->nodeType == PNT_UNARY_PRE_OP || node->nodeType == PNT_UNARY_POST_OP)
+    {
+      for (size_t i = 0; i < node->children.size(); i++)
+      {
+        Node * child = node->children[i];
+        if (has_inexpr_var_decl_in_tree(ident, child, false))
+            return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 
 static bool is_ident_visible(const char * ident, vector<Node *> & nodePath)
 {
@@ -673,6 +742,9 @@ static bool is_ident_visible(const char * ident, vector<Node *> & nodePath)
     Node * node = nodePath[i];
     if (!node)
       break;
+
+    if (has_inexpr_var_decl_in_tree(ident, node, true))
+      return true;
 
     if (node->children.size() > 0 && node->children[0])
     {
@@ -957,6 +1029,26 @@ class Analyzer
     return false;
   }
 
+
+  bool indexChangedInTree(Node * tree)
+  {
+    if (tree->nodeType == PNT_UNARY_PRE_OP || tree->nodeType == PNT_UNARY_POST_OP)
+      if (tree->tok.type == TK_PLUSPLUS || tree->tok.type == TK_MINUSMINUS)
+        return true;
+
+    if (tree->nodeType == PNT_BINARY_OP)
+      if (tree->tok.type == TK_PLUSEQ || tree->tok.type == TK_MINUSEQ || tree->tok.type == TK_MULEQ || tree->tok.type == TK_DIVEQ)
+        return true;
+
+    for (size_t i = 0; i < tree->children.size(); i++)
+      if (tree->children[i])
+        if (indexChangedInTree(tree->children[i]))
+          return true;
+
+    return false;
+  }
+
+
   bool isPotentialyNullable(Node * a)
   {
     if (a->nodeType == PNT_EXPRESSION_PAREN)
@@ -973,6 +1065,30 @@ class Analyzer
 
     if (a->nodeType == PNT_BINARY_OP && a->tok.type == TK_NULLCOALESCE)
       return isPotentialyNullable(a->children[1]);
+
+    Node * repl = tryReplaceVar(a, true);
+    if (repl->nodeType == PNT_NULL)
+      return true;
+
+    return false;
+  }
+
+  bool isPotentialyNullableLValue(Node * a)
+  {
+    if (a->nodeType == PNT_EXPRESSION_PAREN)
+      a = a->children[0];
+
+    if (a->nodeType == PNT_NULL)
+      return true;
+
+    if (a->nodeType == PNT_ACCESS_MEMBER_IF_NOT_NULL || a->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL)
+      return true;
+
+    if (a->nodeType == PNT_ACCESS_MEMBER || a->nodeType == PNT_FUNCTION_CALL)
+      return isPotentialyNullableLValue(a->children[0]);
+
+    if (a->nodeType == PNT_BINARY_OP && a->tok.type == TK_NULLCOALESCE)
+      return isPotentialyNullableLValue(a->children[1]);
 
     return false;
   }
@@ -1049,7 +1165,8 @@ class Analyzer
         return_flags |= RT_NUMBER;
       else if (val->nodeType == PNT_BINARY_OP && (
         val->tok.type == TK_EQ || val->tok.type == TK_NE || val->tok.type == TK_GT || val->tok.type == TK_GE ||
-        val->tok.type == TK_LS || val->tok.type == TK_LE || val->tok.type == TK_IN || val->tok.type == TK_AND ||
+        val->tok.type == TK_LS || val->tok.type == TK_LE || val->tok.type == TK_IN || val->tok.type == TK_NOTIN ||
+        val->tok.type == TK_AND ||
         val->tok.type == TK_OR))
       {
         return_flags |= RT_BOOL;
@@ -1266,8 +1383,12 @@ class Analyzer
           {
             if (lexer.tokens[j].line != line)
               break;
-            if (lexer.tokens[j].type == TK_IDENTIFIER && !strcmp(lexer.tokens[j].u.s, "Watched"))
+
+            if (lexer.tokens[j].type == TK_IDENTIFIER &&
+              (!strcmp(lexer.tokens[j].u.s, "Watched") || !strcmp(lexer.tokens[j].u.s, "mkWatched")))
+            {
               return true;
+            }
           }
         }
         else if (lexer.tokens[i + 1].type == TK_DOT && lexer.tokens[i + 2].type == TK_IDENTIFIER)
@@ -1341,7 +1462,7 @@ class Analyzer
       node->nodeType == PNT_ACCESS_MEMBER || node->nodeType == PNT_ACCESS_MEMBER_IF_NOT_NULL)
     {
       TokenType t = node->tok.type;
-      if (t == TK_3WAYSCMP || t == TK_AND || t == TK_OR || t == TK_IN || t == TK_EQ || t == TK_NE || t == TK_LE ||
+      if (t == TK_3WAYSCMP || t == TK_AND || t == TK_OR || t == TK_IN || t == TK_NOTIN || t == TK_EQ || t == TK_NE || t == TK_LE ||
         t == TK_LS || t == TK_GT || t == TK_GE || t == TK_NOT || t == TK_INV || t == TK_BITAND || t == TK_BITOR ||
         t == TK_BITXOR || t == TK_DIV || t == TK_MODULO || t == TK_INSTANCEOF || t == TK_QMARK || t == TK_MINUS ||
         t == TK_PLUS || t == TK_MUL || t == TK_SHIFTL || t == TK_SHIFTR || t == TK_USHIFTR || t == TK_TYPEOF ||
@@ -1357,7 +1478,7 @@ class Analyzer
 
   bool isSuspiciousNeighborOfNullCoalescing(TokenType t)
   {
-    return (t == TK_3WAYSCMP || t == TK_AND || t == TK_OR || t == TK_IN || t == TK_EQ || t == TK_NE || t == TK_LE ||
+    return (t == TK_3WAYSCMP || t == TK_AND || t == TK_OR || t == TK_IN || t == TK_NOTIN || t == TK_EQ || t == TK_NE || t == TK_LE ||
       t == TK_LS || t == TK_GT || t == TK_GE || t == TK_NOT || t == TK_INV || t == TK_BITAND || t == TK_BITOR ||
       t == TK_BITXOR || t == TK_DIV || t == TK_MODULO || t == TK_INSTANCEOF || t == TK_QMARK || t == TK_MINUS ||
       t == TK_PLUS || t == TK_MUL || t == TK_SHIFTL || t == TK_SHIFTR || t == TK_USHIFTR);
@@ -1611,6 +1732,7 @@ public:
         (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_NE && node->children[1]->tok.type == TK_NULL) ||
         (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_EQ && node->children[1]->tok.type == TK_NULL) ||
         (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_IN) ||
+        (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_NOTIN) ||
         (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_INSTANCEOF) ||
         (node->nodeType == PNT_UNARY_PRE_OP && node->tok.type == TK_NOT) ||
         (node->nodeType == PNT_UNARY_PRE_OP && node->tok.type == TK_TYPEOF) ||
@@ -1635,10 +1757,23 @@ public:
     }
   }
 
+
+  Node * skipUnaryOp(Node * node)
+  {
+    if (!node)
+      return nullptr;
+
+    return (node->nodeType == PNT_UNARY_PRE_OP || node->nodeType == PNT_UNARY_POST_OP) ? skipUnaryOp(node->children[0]) : node;
+  }
+
+
   Node * tryReplaceVar(Node * node, bool accept_optional)
   {
     if (!node)
       return nullptr;
+
+    if (node->nodeType == PNT_EXPRESSION_PAREN)
+      return tryReplaceVar(node->children[0], accept_optional);
 
     for (int i = int(nearest_assignments.size()) - 1; i >= 0; i--)
       if (nearest_assignments[i].first && isNodeEquals(node, nearest_assignments[i].first))
@@ -1651,6 +1786,7 @@ public:
 
     return node;
   }
+
 
   bool isVarCanBeNull(Node * node)
   {
@@ -1793,9 +1929,262 @@ public:
   }
 
 
+  bool isIndeterminated(Node * node)
+  {
+    if (!node)
+      return false;
+
+    if (node->nodeType == PNT_EXPRESSION_PAREN)
+      node = node->children[0];
+
+    if (node->nodeType == PNT_TERNARY_OP)
+    {
+      NodeType type1 = node->children[1]->nodeType;
+      NodeType type2 = node->children[2]->nodeType;
+      if ((node->children[1]->tok.type == TK_CLONE || type1 == PNT_ARRAY_CREATION || type1 == PNT_TABLE_CREATION) &&
+          (node->children[2]->tok.type == TK_CLONE || type2 == PNT_ARRAY_CREATION || type2 == PNT_TABLE_CREATION))
+        return false;
+      else
+        return true;
+    }
+
+    if (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_NULLCOALESCE)
+    {
+      return true;
+    }
+
+    return false;
+  }
+
+
+  bool isNotAssignedStatement()
+  {
+    Node * parent = nodePath[nodePath.size() - 2];
+    if (!parent)
+      return true;
+
+    if (parent->nodeType == PNT_STATEMENT_LIST)
+      return true;
+
+    if ((parent->nodeType == PNT_IF_ELSE || parent->nodeType == PNT_SWITCH_CASE || parent->nodeType == PNT_WHILE_LOOP) &&
+      nodePath[nodePath.size() - 1] != parent->children[0]) // not condition
+    {
+      return true;
+    }
+
+    if ((parent->nodeType == PNT_FOR_EACH_LOOP || parent->nodeType == PNT_FOR_LOOP) &&
+      nodePath[nodePath.size() - 1] == parent->children[3])
+    {
+      return true;
+    }
+
+    return false;
+  }
+
+
+  void updateNearestAssignmentsBeforeCheck(Node * parent, Node * n, int i)
+  {
+    Node * node = parent;
+
+    if (n->nodeType == PNT_LOCAL_FUNCTION || n->nodeType == PNT_FUNCTION || n->nodeType == PNT_CLASS ||
+      n->nodeType == PNT_LOCAL_CLASS)
+    {
+      nearest_assignments.clear();
+    }
+
+    if (n->nodeType == PNT_UNARY_PRE_OP && n->tok.type == TK_TYPEOF)
+      removeNearestAssignmentsFoundAt(n->children[0]);
+
+    if ((n->nodeType == PNT_UNARY_PRE_OP || n->nodeType == PNT_UNARY_POST_OP) &&
+          (n->tok.type == TK_PLUSPLUS || n->tok.type == TK_MINUSMINUS))
+    {
+      if (!isVarCanBeNull(n->children[0]))
+        removeNearestAssignmentsFoundAt(n->children[0]);
+    }
+
+    if (node->nodeType == PNT_TERNARY_OP && i == 0)
+    {
+      removeNearestAssignmentsTestNull(n);
+    }
+
+    if (n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP)
+    {
+      if (n->children.size() > 0)
+        removeNearestAssignmentsFoundAt(n->children[0]);
+    }
+
+    if (n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP)
+      removeNearestAssignmentsMod(n->children[1]);
+
+    if (n->nodeType == PNT_FOR_LOOP)
+    {
+      removeNearestAssignmentsFoundAt(n->children[1]);
+      removeNearestAssignmentsMod(n->children[3]);
+    }
+
+    if (n->nodeType == PNT_FOR_EACH_LOOP)
+      removeNearestAssignmentsMod(n->children[3]);
+
+    if (node->nodeType == PNT_IF_ELSE && i == 0)
+      removeNearestAssignmentsTestNull(n);
+
+    if (n->nodeType == PNT_BINARY_OP && n->tok.type == TK_AND)
+      removeNearestAssignmentsTestNull(n->children[0]);
+
+    if (node->nodeType == PNT_LAMBDA && i == 2)
+      removeNearestAssignmentsTestNull(n);
+  }
+
+
+  void updateNearestAssignmentsAfterCheck(Node * parent, Node * n, int i)
+  {
+    Node * node = parent;
+    updateNearestAssignments(n);
+
+    if (n->nodeType == PNT_BINARY_OP && (n->tok.type == TK_ASSIGN || n->tok.type == TK_PLUSEQ || n->tok.type == TK_MULEQ ||
+      n->tok.type == TK_MINUSEQ || n->tok.type == TK_DIVEQ || n->tok.type == TK_NEWSLOT))
+    {
+      if ((!isVarCanBeNull(n->children[0]) && !isVarCanBeString(n->children[0])) ||
+        n->tok.type == TK_ASSIGN || n->tok.type == TK_NEWSLOT)
+      {
+        removeNearestAssignmentsFoundAt(n->children[0]);
+      }
+    }
+
+    if (node->nodeType == PNT_IF_ELSE)
+      removeNearestAssignmentsExcludeString(node->children[i]);
+
+
+    if (n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP)
+    {
+      for (int j = 1; j < int(n->children.size()); j++)
+        removeNearestAssignmentsFoundAt(n->children[j]);
+    }
+
+    if (n->nodeType == PNT_FUNCTION_CALL || n->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL)
+    {
+      const char * functionName = getFunctionName(n);
+      if (isTestPresentInNodePath(n) || strstr(functionName, "assert") || strcmp(functionName, "type") == 0)
+        for (int j = 1; j < int(n->children.size()); j++)
+          removeNearestAssignmentsFoundAt(n->children[j]);
+    }
+
+
+    if (node->nodeType == PNT_STATEMENT_LIST)
+      if (n->nodeType == PNT_LOCAL_FUNCTION || n->nodeType == PNT_FUNCTION ||
+        n->nodeType == PNT_CONTINUE || n->nodeType == PNT_BREAK || n->nodeType == PNT_RETURN ||
+        n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP ||
+        n->nodeType == PNT_SWITCH_STATEMENT || n->nodeType == PNT_FOR_LOOP ||
+        n->nodeType == PNT_FOR_EACH_LOOP)
+      {
+        nearest_assignments.clear();
+      }
+  }
+
+
+  bool nodeCannotBeNull(Node * n)
+  {
+    return (n->nodeType == PNT_BINARY_OP && n->tok.type != TK_NULLCOALESCE && n->tok.type != TK_MODULO) ||
+        n->nodeType == PNT_UNARY_PRE_OP || n->nodeType == PNT_UNARY_POST_OP ||
+        n->nodeType == PNT_INTEGER || n->nodeType == PNT_BOOL || n->nodeType == PNT_FLOAT ||
+        n->nodeType == PNT_STRING || n->nodeType == PNT_ARRAY_CREATION ||
+        n->nodeType == PNT_TABLE_CREATION || n->nodeType == PNT_LAMBDA || n->nodeType == PNT_FUNCTION ||
+        n->nodeType == PNT_LOCAL_FUNCTION || n->nodeType == PNT_CLASS || n->nodeType == PNT_LOCAL_CLASS;
+  }
+
+
   void check(Node * node)
   {
     nodePath.push_back(node);
+
+    if (node->nodeType == PNT_STRING)
+    {
+      const char * p = strstr(node->tok.u.s, "..");
+      if (p && (p[2] == '/' || p[2] == '\\'))
+      {
+        int functionCalls = 2;
+        for (int i = (nodePath.size() - 2); i >= 0 && nodePath[i]; i--)
+          if (nodePath[i]->nodeType == PNT_FUNCTION_CALL || nodePath[i]->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL)
+          {
+            if (nodePath[i]->children[0] && settings::find(nodePath[i]->children[0]->tok.u.s, settings::function_forbidden_parent_dir))
+            {
+              ctx.warning("forbidden-parent-dir", node->tok);
+              break;
+            }
+            functionCalls--;
+            if (functionCalls <= 0)
+              break;
+          }
+      }
+    }
+
+
+    if ((node->nodeType == PNT_IF_ELSE || node->nodeType == PNT_WHILE_LOOP) &&
+      node->children[1] && node->children[1]->nodeType != PNT_STATEMENT_LIST)
+    {
+      if (node->children[1]->tok.column <= node->tok.column)
+      {
+        Node * parent = nodePath[nodePath.size() - 2];
+        bool elseif = parent && parent->nodeType == PNT_IF_ELSE && parent->children.size() > 2 && parent->children[2] == node;
+
+        if (!elseif)
+          ctx.warning("suspicious-formatting", node->children[1]->tok,
+            std::to_string(node->tok.line).c_str(), std::to_string(node->children[1]->tok.line).c_str());
+      }
+    }
+
+
+    if (node->nodeType == PNT_TERNARY_OP)
+    {
+      if (node->children[0]->nodeType == PNT_BINARY_OP && node->children[0]->tok.type == TK_NE &&
+        node->children[0]->children[1]->nodeType == PNT_NULL &&
+        node->children[2]->nodeType == PNT_NULL &&
+        isNodeEquals(tryReplaceVar(node->children[0]->children[0], false), tryReplaceVar(node->children[1], false)))
+      {
+        ctx.warning("can-be-simplified", node->tok);
+      }
+    }
+
+
+    if ((node->nodeType == PNT_BINARY_OP && node->tok.type == TK_NULLCOALESCE) ||
+        node->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL ||
+        (node->nodeType == PNT_BINARY_OP && (node->tok.type == TK_EQ || node->tok.type == TK_NE) &&
+         node->children[1]->nodeType == PNT_NULL)
+       )
+    {
+      Node * left = tryReplaceVar(node->children[0], false);
+      if (left->nodeType == PNT_BINARY_OP && left->tok.type == TK_NULLCOALESCE)
+        left = tryReplaceVar(left->children[1], false);
+
+      if (left->nodeType == PNT_TERNARY_OP)
+      {
+        Node * ifTrue = tryReplaceVar(left->children[1], false);
+        Node * ifFalse = tryReplaceVar(left->children[2], false);
+
+        if (nodeCannotBeNull(ifTrue) && nodeCannotBeNull(ifFalse))
+          ctx.warning("expr-cannot-be-null", node->tok, token_strings[node->tok.type]);
+      }
+
+      if (nodeCannotBeNull(left))
+        ctx.warning("expr-cannot-be-null", node->tok, token_strings[node->tok.type]);
+    }
+
+
+    if (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_NULLCOALESCE)
+    {
+      Node * right = tryReplaceVar(node->children[1], false);
+      if (right->nodeType == PNT_NULL)
+        ctx.warning("useless-null-coalescing", node->tok);
+    }
+
+
+    if (node->nodeType == PNT_INEXPR_VAR_DECLARATOR || (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_INEXPR_ASSIGNMENT))
+      if (node->children.size() >= 2 && node->children[1] && node->children[1]->nodeType == PNT_BINARY_OP &&
+        is_bool_result(node->children[1]->tok.type))
+      {
+        ctx.warning("inexpr-assign-priority", node->tok);
+      }
+
 
     if (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_OR)
       if (node->children[0]->tok.type == TK_AND || node->children[1]->tok.type == TK_AND)
@@ -1857,7 +2246,20 @@ public:
             {
               if (isNodeEquals(node->children[i]->children[0], node->children[j]->children[0]))
               {
-                if (!existsInTree(node->children[i]->children[0], node->children[j]->children[1]))
+                Node * firstAssignee = node->children[i]->children[0];
+                bool ignore = existsInTree(firstAssignee, node->children[j]->children[1]);
+                if (!ignore && firstAssignee->nodeType == PNT_ACCESS_MEMBER && indexChangedInTree(firstAssignee->children[1]))
+                  ignore = true;
+
+                if (!ignore && firstAssignee->nodeType == PNT_ACCESS_MEMBER && firstAssignee->tok.type == TK_LSQUARE)
+                  for (size_t m = i + 1; m < j; m++)
+                    if (isNodeEquals(firstAssignee->children[1], node->children[m]->children[0]))
+                    {
+                      ignore = true;
+                      break;
+                    }
+
+                if (!ignore)
                   ctx.warning("assigned-twice", node->children[j]->children[0]->tok);
               }
             }
@@ -1886,8 +2288,8 @@ public:
 
     if (node->nodeType == PNT_BINARY_OP && (is_arith_op_token(node->tok.type)))
     {
-      Node * left = tryReplaceVar(node->children[0], true);
-      Node * right = tryReplaceVar(node->children[1], true);
+      Node * left = skipUnaryOp(tryReplaceVar(skipUnaryOp(node->children[0]), true));
+      Node * right = skipUnaryOp(tryReplaceVar(skipUnaryOp(node->children[1]), true));
       if (isPotentialyNullable(left))
       {
         bool tested = (node->children[0]->nodeType == PNT_IDENTIFIER) && isVariableTestedBefore(node->children[0]);
@@ -1905,8 +2307,8 @@ public:
 
     if (node->nodeType == PNT_BINARY_OP && (is_cmp_op_token(node->tok.type)))
     {
-      Node * left = tryReplaceVar(node->children[0], true);
-      Node * right = tryReplaceVar(node->children[1], true);
+      Node * left = skipUnaryOp(tryReplaceVar(skipUnaryOp(node->children[0]), true));
+      Node * right = skipUnaryOp(tryReplaceVar(skipUnaryOp(node->children[1]), true));
       if (isPotentialyNullable(left))
       {
         bool tested = (node->children[0]->nodeType == PNT_IDENTIFIER) && isVariableTestedBefore(node->children[0]);
@@ -1928,13 +2330,21 @@ public:
         node->tok.type == TK_DIVEQ || node->tok.type == TK_MODEQ
        ))
     {
-      if (isPotentialyNullable(node->children[0]))
+      if (isPotentialyNullableLValue(node->children[0]))
         ctx.warning("potentially-nulled-assign", node->tok);
 
       if (node->tok.type != TK_ASSIGN && node->tok.type != TK_NEWSLOT)
       {
-        Node * right = tryReplaceVar(node->children[1], true);
-        if (isPotentialyNullable(node->children[1]))
+        Node * left = skipUnaryOp(tryReplaceVar(skipUnaryOp(node->children[0]), true));
+        if (isPotentialyNullable(left))
+        {
+          bool tested = (node->children[0]->nodeType == PNT_IDENTIFIER) && isVariableTestedBefore(node->children[0]);
+          if (!tested)
+            ctx.warning("potentially-nulled-arith", node->children[0]->tok);
+        }
+
+        Node * right = skipUnaryOp(tryReplaceVar(skipUnaryOp(node->children[1]), true));
+        if (isPotentialyNullable(right))
         {
           bool tested = (node->children[1]->nodeType == PNT_IDENTIFIER) && isVariableTestedBefore(node->children[1]);
           if (!tested)
@@ -1959,7 +2369,7 @@ public:
     if (node->nodeType == PNT_ACCESS_MEMBER && node->tok.type == TK_LSQUARE &&
       node->children[0]->nodeType != PNT_ACCESS_MEMBER_IF_NOT_NULL)
     {
-      Node * n = tryReplaceVar(node->children[1], true);
+      Node * n = skipUnaryOp(tryReplaceVar(skipUnaryOp(node->children[1]), true));
       if (isPotentialyNullable(n))
       {
         bool tested = (node->children[1]->nodeType == PNT_IDENTIFIER) && isVariableTestedBefore(node->children[1]);
@@ -2093,6 +2503,14 @@ public:
     }
 
 
+    if (node->nodeType == PNT_FUNCTION_CALL || node->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL)
+    {
+      const char * functionName = getFunctionName(node);
+      if (settings::find(functionName, settings::forbidden_function))
+        ctx.warning("forbidden-function", node->tok, functionName);
+    }
+
+
     if (node->nodeType == PNT_DO_WHILE_LOOP || node->nodeType == PNT_WHILE_LOOP || node->nodeType == PNT_FOR_EACH_LOOP ||
       node->nodeType == PNT_FOR_LOOP)
     {
@@ -2181,9 +2599,13 @@ public:
           checkUnutilizedResult(node->children[2]);
       }
 
-      if (node->nodeType == PNT_SWITCH_CASE)
+      if (node->nodeType == PNT_SWITCH_CASE || node->nodeType == PNT_WHILE_LOOP || node->nodeType == PNT_DO_WHILE_LOOP)
         if (node->children.size() > 1)
           checkUnutilizedResult(node->children[1]);
+
+      if (node->nodeType == PNT_FOR_LOOP || node->nodeType == PNT_FOR_EACH_LOOP)
+        if (node->children.size() > 3)
+          checkUnutilizedResult(node->children[3]);
     }
 
 
@@ -2195,7 +2617,7 @@ public:
       if (n->nodeType == PNT_BINARY_OP)
       {
         TokenType t = n->tok.type;
-        if (t == TK_AND || t == TK_OR || t == TK_IN || t == TK_EQ || t == TK_NE || t == TK_LE || t == TK_LS ||
+        if (t == TK_AND || t == TK_OR || t == TK_IN || t == TK_NOTIN || t == TK_EQ || t == TK_NE || t == TK_LE || t == TK_LS ||
           t == TK_GT || t == TK_GE || t == TK_NOT || t == TK_INSTANCEOF)
         {
           ctx.warning("bool-as-index", node->tok);
@@ -2206,7 +2628,8 @@ public:
     if (node->nodeType == PNT_BINARY_OP)
     {
       TokenType t = node->tok.type;
-      if (is_cmp_op_with_bool_result(t))
+      if (is_cmp_op_with_bool_result(t) &&
+        node->children[0]->nodeType != PNT_EXPRESSION_PAREN && node->children[1]->nodeType != PNT_EXPRESSION_PAREN)
       {
         Node * a = tryReplaceVar(node->children[0], true);
         Node * b = tryReplaceVar(node->children[1], true);
@@ -2227,8 +2650,7 @@ public:
               warn = false;
             }
 
-            if (node->children[0]->nodeType == PNT_IDENTIFIER && node->children[1]->nodeType == PNT_IDENTIFIER &&
-              is_cmp_op_with_bool_result(left) && is_cmp_op_with_bool_result(right))
+            if (node->children[0]->nodeType == PNT_IDENTIFIER && node->children[1]->nodeType == PNT_IDENTIFIER)
             {
               warn = false;
             }
@@ -2385,6 +2807,27 @@ public:
     }
 
 
+    if (node->nodeType == PNT_TERNARY_OP)
+    {
+      Node * val = node->children[0];
+      if (val->nodeType == PNT_EXPRESSION_PAREN)
+        val = val->children[0];
+
+      val = tryReplaceVar(val, false);
+
+      if (val->nodeType == PNT_INTEGER || val->nodeType == PNT_BOOL || val->nodeType == PNT_STRING ||
+        val->nodeType == PNT_FLOAT || val->nodeType == PNT_ARRAY_CREATION || val->nodeType == PNT_TABLE_CREATION ||
+        val->nodeType == PNT_FUNCTION ||
+        val->nodeType == PNT_LOCAL_FUNCTION || val->nodeType == PNT_LAMBDA || val->nodeType == PNT_CLASS)
+      {
+        ctx.warning("always-true-or-false", node->children[0]->tok, val->tok.u.i ? "true" : "false");
+      }
+
+      if (val->nodeType == PNT_NULL)
+        ctx.warning("always-true-or-false", node->children[0]->tok, "false");
+    }
+
+
     if (node->nodeType == PNT_BINARY_OP && (node->tok.type == TK_AND || node->tok.type == TK_OR))
     {
       Node * leftConstant = node->children[0];
@@ -2395,8 +2838,8 @@ public:
       if (rightConstant->nodeType == PNT_EXPRESSION_PAREN)
         rightConstant = rightConstant->children[0];
 
-      leftConstant = tryReplaceVar(leftConstant, false);
-      rightConstant = tryReplaceVar(rightConstant, false);
+      leftConstant = skipUnaryOp(tryReplaceVar(skipUnaryOp(leftConstant), false));
+      rightConstant = skipUnaryOp(tryReplaceVar(skipUnaryOp(rightConstant), false));
 
       if (leftConstant->nodeType == PNT_ACCESS_MEMBER && leftConstant->children[1]->nodeType == PNT_IDENTIFIER)
         leftConstant = leftConstant->children[1];
@@ -2405,10 +2848,16 @@ public:
 
       bool leftIsConstant = (leftConstant->nodeType == PNT_INTEGER || leftConstant->nodeType == PNT_NULL ||
         leftConstant->nodeType == PNT_BOOL || leftConstant->nodeType == PNT_STRING ||
+        leftConstant->nodeType == PNT_FUNCTION || leftConstant->nodeType == PNT_LOCAL_FUNCTION ||
+        leftConstant->nodeType == PNT_LAMBDA || leftConstant->nodeType == PNT_CLASS ||
+        leftConstant->nodeType == PNT_ARRAY_CREATION || leftConstant->nodeType == PNT_TABLE_CREATION ||
         leftConstant->nodeType == PNT_FLOAT || isUpperCaseIdentifier(leftConstant));
 
       bool rightIsConstant = (rightConstant->nodeType == PNT_INTEGER || rightConstant->nodeType == PNT_NULL ||
         rightConstant->nodeType == PNT_BOOL || rightConstant->nodeType == PNT_STRING ||
+        rightConstant->nodeType == PNT_FUNCTION || rightConstant->nodeType == PNT_LOCAL_FUNCTION ||
+        rightConstant->nodeType == PNT_LAMBDA || rightConstant->nodeType == PNT_CLASS ||
+        rightConstant->nodeType == PNT_ARRAY_CREATION || rightConstant->nodeType == PNT_TABLE_CREATION ||
         rightConstant->nodeType == PNT_FLOAT || isUpperCaseIdentifier(rightConstant));
 
       if (rightIsConstant && node->tok.type == TK_OR) // exclude cases when '||' is used instead of '??'
@@ -2417,6 +2866,31 @@ public:
 
       if (leftIsConstant || rightIsConstant)
         ctx.warning("const-in-bool-expr", node->tok);
+    }
+
+
+    if (node->nodeType == PNT_BINARY_OP)
+    {
+      if (is_arith_op_token(node->tok.type) || is_cmp_op_with_bool_result(node->tok.type) || is_bool_result(node->tok.type))
+      {
+        Node * left = node->children[0];
+        Node * right = node->children[1];
+        if (left->nodeType == PNT_EXPRESSION_PAREN)
+          left = left->children[0];
+        if (right->nodeType == PNT_EXPRESSION_PAREN)
+          right = right->children[0];
+
+        left = tryReplaceVar(left, false);
+        right = tryReplaceVar(right, false);
+
+        if (left->nodeType == PNT_FUNCTION || left->nodeType == PNT_LOCAL_FUNCTION ||
+            left->nodeType == PNT_CLASS_METHOD || left->nodeType == PNT_LAMBDA)
+          ctx.warning("func-in-expression", node->children[0]->tok);
+
+        if (right->nodeType == PNT_FUNCTION || right->nodeType == PNT_LOCAL_FUNCTION ||
+            right->nodeType == PNT_CLASS_METHOD || right->nodeType == PNT_LAMBDA)
+          ctx.warning("func-in-expression", node->children[1]->tok);
+      }
     }
 
 
@@ -2430,8 +2904,8 @@ public:
       if (rightConstant->nodeType == PNT_EXPRESSION_PAREN)
         rightConstant = rightConstant->children[0];
 
-      leftConstant = tryReplaceVar(leftConstant, false);
-      rightConstant = tryReplaceVar(rightConstant, true);
+      leftConstant = skipUnaryOp(tryReplaceVar(skipUnaryOp(leftConstant), false));
+      rightConstant = skipUnaryOp(tryReplaceVar(skipUnaryOp(rightConstant), true));
 
       if (leftConstant->nodeType == PNT_INTEGER && rightConstant->nodeType == PNT_INTEGER)
       {
@@ -2477,6 +2951,25 @@ public:
     }
 
 
+    if (node->nodeType == PNT_VAR_DECLARATOR && node->children[0]->nodeType == PNT_LIST_OF_KEYS_TABLE &&
+      node->children.size() > 1 && node->children[1] && isPotentialyNullable(tryReplaceVar(node->children[1], true)))
+    {
+      bool allVariablesHasDefault = true;
+      for (Node * decl : node->children[0]->children)
+        if (decl && decl->children.size() == 1)
+        {
+          allVariablesHasDefault = false;
+          break;
+        }
+
+      if (!allVariablesHasDefault)
+      {
+        ctx.warning("access-potentially-nulled", node->children[1]->tok,
+          node->children[1]->nodeType == PNT_IDENTIFIER ? node->children[1]->tok.u.s : "expression");
+      }
+    }
+
+
     if (node->nodeType == PNT_ACCESS_MEMBER && node->children[0]->nodeType == PNT_EXPRESSION_PAREN)
     {
       if (isPotentialyNullable(node->children[0]))
@@ -2506,8 +2999,8 @@ public:
       Node * left = node->children[0];
       Node * right = node->children[1];
 
-      left = tryReplaceVar(left, true);
-      right = tryReplaceVar(right, true);
+      left = skipUnaryOp(tryReplaceVar(skipUnaryOp(left), true));
+      right = skipUnaryOp(tryReplaceVar(skipUnaryOp(right), true));
 
       if (left->nodeType == PNT_FUNCTION_CALL || left->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL)
         n = left;
@@ -2539,7 +3032,7 @@ public:
     }
 
 
-    if (node->nodeType == PNT_BINARY_OP && node->tok.type == TK_IN)
+    if (node->nodeType == PNT_BINARY_OP && (node->tok.type == TK_IN || node->tok.type == TK_NOTIN))
     {
       Node * left = node->children[0];
       Node * right = node->children[1];
@@ -2575,6 +3068,55 @@ public:
       {
         ctx.warning("conditional-local-var", node->tok);
       }
+
+
+    if (node->nodeType == PNT_FOR_LOOP)
+    {
+      const char * varName = nullptr;
+      Node * initializer = node->children[0];
+      Node * condition = node->children[1];
+      Node * increment = node->children[2];
+      if (initializer && initializer->nodeType == PNT_BINARY_OP && initializer->tok.type == TK_ASSIGN &&
+        initializer->children[0]->nodeType == PNT_IDENTIFIER)
+      {
+        varName = initializer->children[0]->tok.u.s;
+      }
+
+      if (initializer && initializer->nodeType == PNT_LOCAL_VAR_DECLARATION &&
+        initializer->children[0]->nodeType == PNT_VAR_DECLARATOR && initializer->children[0]->tok.type == TK_IDENTIFIER)
+      {
+        varName = initializer->children[0]->tok.u.s;
+      }
+
+      if (varName && condition)
+      {
+        if (condition->nodeType == PNT_BINARY_OP && condition->children[0]->nodeType == PNT_IDENTIFIER &&
+            strcmp(condition->children[0]->tok.u.s, varName) != 0)
+        {
+          bool foundAtRightSide = (condition->children[1]->nodeType == PNT_IDENTIFIER &&
+            strcmp(condition->children[1]->tok.u.s, varName) == 0);
+
+          if (!foundAtRightSide)
+            ctx.warning("mismatch-loop-variable", condition->children[0]->tok);
+        }
+      }
+
+      if (varName && increment)
+      {
+        if (increment->nodeType == PNT_BINARY_OP && increment->children[0]->nodeType == PNT_IDENTIFIER &&
+            strcmp(increment->children[0]->tok.u.s, varName) != 0)
+        {
+          ctx.warning("mismatch-loop-variable", increment->children[0]->tok);
+        }
+
+        if ((increment->nodeType == PNT_UNARY_PRE_OP || increment->nodeType == PNT_UNARY_POST_OP) &&
+            increment->children[0]->nodeType == PNT_IDENTIFIER &&
+            strcmp(increment->children[0]->tok.u.s, varName) != 0)
+        {
+          ctx.warning("mismatch-loop-variable", increment->children[0]->tok);
+        }
+      }
+    }
 
 
     if (node->nodeType == PNT_BINARY_OP && (node->tok.type == TK_PLUS || node->tok.type == TK_PLUSEQ))
@@ -2745,97 +3287,9 @@ public:
       Node * n = node->children[i];
       if (n)
       {
-        if (n->nodeType == PNT_LOCAL_FUNCTION || n->nodeType == PNT_FUNCTION || n->nodeType == PNT_CLASS ||
-          n->nodeType == PNT_LOCAL_CLASS)
-        {
-          nearest_assignments.clear();
-        }
-
-        if (n->nodeType == PNT_UNARY_PRE_OP && n->tok.type == TK_TYPEOF)
-          removeNearestAssignmentsFoundAt(n->children[0]);
-
-        if ((n->nodeType == PNT_UNARY_PRE_OP || n->nodeType == PNT_UNARY_POST_OP) &&
-              (n->tok.type == TK_PLUSPLUS || n->tok.type == TK_MINUSMINUS))
-        {
-          if (!isVarCanBeNull(n->children[0]))
-            removeNearestAssignmentsFoundAt(n->children[0]);
-        }
-
-        if (node->nodeType == PNT_TERNARY_OP && i == 0)
-        {
-          removeNearestAssignmentsTestNull(n);
-        }
-
-        if (n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP)
-        {
-          if (n->children.size() > 0)
-            removeNearestAssignmentsFoundAt(n->children[0]);
-        }
-
-        if (n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP)
-          removeNearestAssignmentsMod(n->children[1]);
-
-        if (n->nodeType == PNT_FOR_LOOP)
-        {
-          removeNearestAssignmentsFoundAt(n->children[1]);
-          removeNearestAssignmentsMod(n->children[3]);
-        }
-
-        if (n->nodeType == PNT_FOR_EACH_LOOP)
-          removeNearestAssignmentsMod(n->children[3]);
-
-        if (node->nodeType == PNT_IF_ELSE && i == 0)
-          removeNearestAssignmentsTestNull(n);
-
-        if (n->nodeType == PNT_BINARY_OP && n->tok.type == TK_AND)
-          removeNearestAssignmentsTestNull(n->children[0]);
-
-        if (node->nodeType == PNT_LAMBDA && i == 2)
-          removeNearestAssignmentsTestNull(n);
-
-
+        updateNearestAssignmentsBeforeCheck(node, n, i);
         check(n);
-        updateNearestAssignments(n);
-
-
-        if (n->nodeType == PNT_BINARY_OP && (n->tok.type == TK_ASSIGN || n->tok.type == TK_PLUSEQ || n->tok.type == TK_MULEQ ||
-          n->tok.type == TK_MINUSEQ || n->tok.type == TK_DIVEQ || n->tok.type == TK_NEWSLOT))
-        {
-          if ((!isVarCanBeNull(n->children[0]) && !isVarCanBeString(n->children[0])) ||
-            n->tok.type == TK_ASSIGN || n->tok.type == TK_NEWSLOT)
-          {
-            removeNearestAssignmentsFoundAt(n->children[0]);
-          }
-        }
-
-        if (node->nodeType == PNT_IF_ELSE)
-          removeNearestAssignmentsExcludeString(node->children[i]);
-
-
-        if (n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP)
-        {
-          for (int j = 1; j < int(n->children.size()); j++)
-            removeNearestAssignmentsFoundAt(n->children[j]);
-        }
-
-        if (n->nodeType == PNT_FUNCTION_CALL || n->nodeType == PNT_FUNCTION_CALL_IF_NOT_NULL)
-        {
-          const char * functionName = getFunctionName(n);
-          if (isTestPresentInNodePath(n) || strstr(functionName, "assert") || strcmp(functionName, "type") == 0)
-            for (int j = 1; j < int(n->children.size()); j++)
-              removeNearestAssignmentsFoundAt(n->children[j]);
-        }
-
-
-        if (node->nodeType == PNT_STATEMENT_LIST)
-          if (n->nodeType == PNT_LOCAL_FUNCTION || n->nodeType == PNT_FUNCTION ||
-            n->nodeType == PNT_CONTINUE || n->nodeType == PNT_BREAK || n->nodeType == PNT_RETURN ||
-            n->nodeType == PNT_WHILE_LOOP || n->nodeType == PNT_DO_WHILE_LOOP ||
-            n->nodeType == PNT_SWITCH_STATEMENT || n->nodeType == PNT_FOR_LOOP ||
-            n->nodeType == PNT_FOR_EACH_LOOP)
-          {
-            nearest_assignments.clear();
-          }
+        updateNearestAssignmentsAfterCheck(node, n, i);
       }
     }
 
@@ -3049,6 +3503,27 @@ public:
     return DC_NONE;
   }
 
+  bool isTemporaryVariable(const char * name)  // _, __, _0, _1, _2, ...
+  {
+    if (!name || !name[0] || name[0] != '_')
+      return false;
+
+    if (!strcmp(name, "__"))
+      return true;
+
+    name++;
+
+    while (*name)
+    {
+      if (!isdigit(*name))
+        return false;
+
+      name++;
+    }
+
+    return true;
+  }
+
   void leaveScope(int scope_depth)
   {
     while (!localIdentifiers.empty() && int(localIdentifiers.size()) > scope_depth)
@@ -3069,6 +3544,9 @@ public:
                   break;
                  }
 
+            if (isTemporaryVariable(ident.namePtr))
+              ignore = true;
+
             if (!ignore)
               ctx.warning("declared-never-used", *ident.declaredAt, declContextToString(ident.declContext), ident.namePtr);
           }
@@ -3081,14 +3559,16 @@ public:
           if (ident.declContext == DC_LOCAL_VARIABLE || ident.declContext == DC_ENUM_NAME ||
             ident.declContext == DC_GLOBAL_ENUM_NAME || ident.declContext == DC_LOCAL_FUNCTION_NAME)
           {
-            ctx.warning("declared-never-used", *ident.declaredAt, declContextToString(ident.declContext), ident.namePtr);
+            if (!isTemporaryVariable(ident.namePtr))
+              ctx.warning("declared-never-used", *ident.declaredAt, declContextToString(ident.declContext), ident.namePtr);
           }
 
         if (ident.assignedAt && cmpTokenPos(ident.usedAt, ident.assignedAt) < 0 && !ident.assignedInsideLoop &&
           ident.useDepth == ident.assignDepth && ident.useDepth == ident.declDepth)
         {
           if (ident.declContext == DC_LOCAL_VARIABLE || ident.declContext == DC_FUNCTION_PARAM)
-            ctx.warning("assigned-never-used", *ident.assignedAt, declContextToString(ident.declContext), ident.namePtr);
+            if (!isTemporaryVariable(ident.namePtr))
+              ctx.warning("assigned-never-used", *ident.assignedAt, declContextToString(ident.declContext), ident.namePtr);
         }
       }
 
@@ -3196,6 +3676,47 @@ public:
     }
 
 
+    if (node->nodeType == PNT_IDENTIFIER && nodePath[nodePath.size() - 2] && nodePath[nodePath.size() - 2]->nodeType == PNT_BINARY_OP)
+    {
+      TokenType parentTok = nodePath[nodePath.size() - 2]->tok.type;
+      if (parentTok != TK_NEWSLOT && parentTok != TK_ASSIGN && parentTok != TK_NULLCOALESCE)
+      {
+        DeclarationContext dc = getIdentifiedDeclarationContext(node->tok.u.s, node->tok.u.s, scope_depth);
+        if (dc == DC_CLASS_METHOD || dc == DC_LOCAL_FUNCTION_NAME || dc == DC_FUNCTION_NAME)
+          ctx.warning("func-in-expression", node->tok);
+      }
+    }
+
+
+    if (node->nodeType == PNT_FUNCTION_CALL &&
+      (node->children[0]->nodeType == PNT_ACCESS_MEMBER || node->children[0]->nodeType == PNT_ACCESS_MEMBER_IF_NOT_NULL) &&
+      (node->children[0]->children.size() > 1 && node->children[0]->children[1]->nodeType == PNT_IDENTIFIER) &&
+      !isNotAssignedStatement())
+    {
+      bool ignore = nodePath[nodePath.size() - 2] && nodePath[nodePath.size() - 2]->tok.type == TK_NEWSLOT; // ignore '<-'
+
+      ignore |= (nodePath[nodePath.size() - 2] && nodePath[nodePath.size() - 2]->nodeType == PNT_LAMBDA &&
+        node->children[0]->children[0]->nodeType == PNT_IDENTIFIER);
+
+      if (!ignore)
+      {
+        Node * functionNameNode = node->children[0]->children[1];
+        const char * functionName = functionNameNode->tok.u.s;
+        if (functionName && settings::find(functionName, settings::function_modifies_object))
+        {
+          Node * obj = tryReplaceVar(node->children[0]->children[0], true);
+          DeclarationContext dc = DC_NONE;
+          if (obj->nodeType == PNT_IDENTIFIER)
+            dc = getIdentifiedDeclarationContext(obj->tok.u.s, obj->tok.u.s, scope_depth);
+          if (isIndeterminated(obj) || (dc > DC_CHILD_NOT_FOUND && dc != DC_LOCAL_VARIABLE))
+          {
+            ctx.warning("unwanted-modification", functionNameNode->tok, functionName);
+          }
+        }
+      }
+    }
+
+
     if (!inside_access_member)
     {
       if (node->nodeType == PNT_RETURN || node->nodeType == PNT_UNARY_PRE_OP || node->nodeType == PNT_UNARY_POST_OP ||
@@ -3205,7 +3726,12 @@ public:
         node->nodeType == PNT_SWITCH_STATEMENT || node->nodeType == PNT_IF_ELSE || node->nodeType == PNT_SWITCH_CASE)
       {
         Node * test = node->children.size() > 0 ? node->children[0] : nullptr;
-        checkDeclared(test, node->nodeType == PNT_ACCESS_MEMBER ? node->children[1] : nullptr, inside_static, scope_depth);
+        checkDeclared(test, nullptr, inside_static, scope_depth);
+        if ((node->nodeType == PNT_ACCESS_MEMBER || node->nodeType == PNT_ACCESS_MEMBER_IF_NOT_NULL) &&
+          (node->tok.type == TK_LSQUARE || node->tok.type == TK_NULLGETOBJ))
+        {
+          checkDeclared(node->children[1], nullptr, inside_static, scope_depth);
+        }
       }
       else if (node->nodeType == PNT_VAR_DECLARATOR)
       {
@@ -3217,7 +3743,7 @@ public:
         Node * test = node->children.size() > 2 ? node->children[2] : nullptr;
         checkDeclared(test, nullptr, inside_static, scope_depth);
       }
-      else if (node->nodeType == PNT_KEY_VALUE ||
+      else if (node->nodeType == PNT_KEY_VALUE || node->nodeType == PNT_FUNCTION_PARAMETER ||
         node->nodeType == PNT_STATIC_CLASS_MEMBER || node->nodeType == PNT_CLASS_MEMBER)
       {
         Node * test = node->children.size() > 1 ? node->children[1] : nullptr;
@@ -3418,17 +3944,19 @@ public:
       if (node->children[i])
       {
         bool dontMarkUsed = false;
+        bool accessMember = i > 0 && (node->nodeType == PNT_ACCESS_MEMBER || node->nodeType == PNT_ACCESS_MEMBER_IF_NOT_NULL) &&
+          (node->tok.type != TK_LSQUARE && node->tok.type != TK_NULLGETOBJ);
+
         if ((node->nodeType == PNT_VAR_DECLARATOR && i == 0) ||
           (node->nodeType == PNT_FOR_EACH_LOOP && i <= 1) ||
           (node->nodeType == PNT_FUNCTION_PARAMETER && i == 0) ||
           (node->nodeType == PNT_LOCAL_FUNCTION && i == 0) ||
-          (node->nodeType == PNT_KEY_VALUE && i == 0))
+          (node->nodeType == PNT_KEY_VALUE && i == 0) ||
+          accessMember
+          )
         {
           dontMarkUsed = true;
         }
-
-        bool accessMember = i > 0 && (node->nodeType == PNT_ACCESS_MEMBER || node->nodeType == PNT_ACCESS_MEMBER_IF_NOT_NULL) &&
-          (node->tok.type != TK_LSQUARE && node->tok.type != TK_NULLGETOBJ);
 
         if (node->nodeType == PNT_LAMBDA)
           inside_lambda = true;
@@ -3437,10 +3965,18 @@ public:
         while (nextIndex < node->children.size() && !node->children[nextIndex])
           nextIndex++;
 
+        updateNearestAssignmentsBeforeCheck(node, node->children[i], i);
+
         int lineOfNextToken = (nextIndex < node->children.size()) ? node->children[nextIndex]->tok.line : line_of_next_token;
         checkVariables(node->children[i], nextScope, lineOfNextToken, dontMarkUsed, inside_lambda, inside_loop,
           accessMember, function_depth, inside_static);
+
+        updateNearestAssignmentsAfterCheck(node, node->children[i], i);
       }
+
+
+    if (node->nodeType == PNT_STATEMENT_LIST)
+      updateNearestAssignments(NULL);
 
 
     if (reverseVisit)
@@ -3594,6 +4130,34 @@ OutputMode str_to_output_mode(const char * str)
   return OM_FULL;
 }
 
+
+static void error_cb(void * user_pointer, const char * message, int line, int column)
+{
+  CompilationContext * ctx = (CompilationContext *)user_pointer;
+  ctx->error(166, message, line, column);
+}
+
+
+bool process_import(CompilationContext & ctx)
+{
+  ImportParser importParser(error_cb, &ctx);
+  const char * importPtr = ctx.code.c_str();
+  ctx.firstLineAfterImport = 1;
+  int importEndCol = 0;
+  vector<string> directives;
+  vector<pair<const char *, const char *>> keepRanges;
+  if (!importParser.parse(&importPtr, ctx.firstLineAfterImport, importEndCol, ctx.imports, &directives, &keepRanges))
+    return false;
+
+  (void) importEndCol;
+  (void) directives;
+
+  ImportParser::replaceImportBySpaces((char *)ctx.code.c_str(), (char *)importPtr, keepRanges);
+
+  return true;
+}
+
+
 static std::set<int> used_args;
 static int argc__ = 0;
 static char ** argv__ = nullptr;
@@ -3720,6 +4284,9 @@ int process_single_source(const string & file_name, const string & source_code, 
     ctx.clearSuppressedWarnings();
     ctx.inverseWarningsSuppression();
   }
+
+  if (!process_import(ctx))
+    return 1;
 
   Lexer lex(ctx);
 

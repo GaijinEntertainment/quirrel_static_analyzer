@@ -49,7 +49,8 @@ int Lexer::nextChar()
   if (index > 0 && (s[index - 1] == 0x0a || (s[index - 1] == 0x0d && s[index] != 0x0a)))
   {
     if ((index > 1 && isSpaceOrTab(s[index - 2])) || (index > 2 && s[index - 2] == '\r' && isSpaceOrTab(s[index - 3])))
-      ctx.warning("space-at-eol", curLine, curColumn - 1);
+      if (curLine >= ctx.firstLineAfterImport)
+        ctx.warning("space-at-eol", curLine, curColumn - 1);
 
     curColumn = 1;
     curLine++;
@@ -708,6 +709,11 @@ bool Lexer::process()
         PUSH_TOKEN(TK_DOUBLE_COLON);
         nextChar();
       }
+      else if (fetchChar() == '=')
+      {
+        PUSH_TOKEN(TK_INEXPR_ASSIGNMENT);
+        nextChar();
+      }
       else
       {
         PUSH_TOKEN(TK_COLON);
@@ -838,7 +844,12 @@ bool Lexer::process()
 
           auto it = tokenIdentStringToType.find(tok);
           if (it != tokenIdentStringToType.end())
-            tokens.push_back({ it->second, false, false, (unsigned short)beginColumn, beginLine, u });
+          {
+            if (it->second == TK_IN && !tokens.empty() && tokens.back().type == TK_NOTTXT)
+              tokens.back().type = TK_NOTIN;
+            else
+              tokens.push_back({ it->second, false, false, (unsigned short)beginColumn, beginLine, u });
+          }
           else
             tokens.push_back({ (TokenType)TK_IDENTIFIER, false, false, (unsigned short)beginColumn, beginLine, u });
         }

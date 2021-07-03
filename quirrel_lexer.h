@@ -12,6 +12,7 @@
   TOKEN_TYPE(TK_INTEGER, "[INTEGER]") \
   TOKEN_TYPE(TK_FLOAT, "[FLOAT]") \
   TOKEN_TYPE(TK_ASSIGN, "=") \
+  TOKEN_TYPE(TK_INEXPR_ASSIGNMENT, ":=") \
   TOKEN_TYPE(TK_COMMA, ",") \
   TOKEN_TYPE(TK_DOT, ".") \
   TOKEN_TYPE(TK_PLUS, "+") \
@@ -100,7 +101,9 @@
   TOKEN_TYPE(TK_RAWCALL, "rawcall") \
   TOKEN_TYPE(TK_DOCSTRING, "[DOCSTRING]") \
   TOKEN_TYPE(TK_GLOBAL, "global") \
-  TOKEN_TYPE(TK_READER_MACRO, "[READER_MACRO]") \
+  TOKEN_TYPE(TK_READER_MACRO, "[READER MACRO]") \
+  TOKEN_TYPE(TK_NOTTXT, "not") \
+  TOKEN_TYPE(TK_NOTIN, "[NOT IN]") \
 
 
 #define TOKEN_TYPE(x, y) x,
@@ -132,7 +135,6 @@ struct Token
 
 class Lexer
 {
-  CompilationContext & ctx;
   const std::string & s; // code
   std::map<std::string, TokenType> tokenIdentStringToType;
 
@@ -155,6 +157,7 @@ class Lexer
   std::string expandReaderMacro(const char * str, int & out_macro_length);
 
 public:
+  CompilationContext & ctx;
   std::vector<Token> tokens;
 
   Lexer(CompilationContext & compiler_context);
