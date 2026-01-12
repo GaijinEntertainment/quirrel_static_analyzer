@@ -1,32 +1,17 @@
 # quirrel_static_analyzer
 
-Quirrel Language Analyzer.
-...put some words here
+**Static Analysis for Quirrel is now built-in!**
 
-## How to use
+The standalone `quirrel_static_analyzer` project has been deprecated. Static analysis functionality has been fully integrated directly into the Quirrel language implementation.
 
-### Drey python script
+If you'd like to use the static analyzer, please refer to the main Quirrel repository: https://github.com/GaijinEntertainment/quirrel
 
-#### .dreyconfig
+To get started:
+1. Build the `sq` command-line tool from the Quirrel repository.
+2. Run it with the `--sa` flag to enable static analysis:
 
-## How to build
+```sh
+sq --sa your_script.nut
+```
 
-#### Microsoft Visual Studio
-
-* `mkdir build`  
-* `cd build`  
-* `cmake ..`
-
-
-Load generated solution (*.sln), then switch solution configuration to "Release" and build `quirrel_static_analyzer`.
-Run `quirrel_static_analyzer\tests\run_tests.bat` to make sure everything is fine.
-
-
-## Dependencies and requirements
- 
- no dependecies. C++11 compiler required (tested on MSVC 2019)
-
-Author - Alexey Borisov a.borisov@gaijin.team
-Copyright by Gaijin Entertainment, 2019.
-
-
+All future development and improvements to the static analyzer will happen within the main Quirrel codebase.
